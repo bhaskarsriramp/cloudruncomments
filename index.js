@@ -1485,7 +1485,7 @@ async function sendInitialDM({
 app.post("/pubsub-messaging", async (req, res) => {
   
   try {
-    console.log("📨 /pubsub-messaging called");
+    console.log("📨 /pubsub-messaging is called");
     const start = process.hrtime.bigint(); // high-resolution timer
 
     if (PUBSUB_TOKEN) {
