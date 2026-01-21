@@ -1,0 +1,17 @@
+{
+  "name": "ig-webhook-worker",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "mongoose": "^8.9.4",
+    "axios": "^1.7.9",
+    "qs": "^6.2.4",
+    "fast-levenshtein": "^3.0.0",
+    "agenda": "^5.0.0"
+  }
+}

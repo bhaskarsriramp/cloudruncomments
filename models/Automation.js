@@ -1,0 +1,42 @@
+import mongoose from "mongoose";
+const { Schema } = mongoose;
+
+const AutomationSchema = new Schema(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: "users", required: true },
+    platform: { type: String, enum: ["instagram"], default: "instagram" },
+    postId: { type: String },
+    postType: { type: String},
+    repliedCount: { type: Number, default: 0 },
+    thumbnail: { type: String },
+    postLive: { type: Boolean, default: true },
+    lastCheckedAt: { type: Date, default: Date.now },
+    caption: { type: String, default: null, trim: true },
+    dmMessage: { type: String},
+    buttonText: { type: String},
+    flowNodes: { type: Array, default: []},
+    keywords: { type: Array, default: []},
+    hasReply: { type: Boolean, default: false},
+    replyComments: { type: [String], default: [] },
+    igUserId: {type: String },
+    createdAt: { type: Date },
+    status: {
+      type: String,
+      enum: ["active", "paused", "archived", "inactive"],
+      default: "active",
+      index: true,
+    },
+     clonedFrom: { type: Schema.Types.ObjectId, ref: "automations" },
+
+  },
+  { timestamps: true }
+);
+
+AutomationSchema.index({ userId: 1, postId: 1 });
+AutomationSchema.index({ platform: 1, postId: 1, status: 1 });
+AutomationSchema.index({ postLive: 1, userId: 1 });
+
+const Automation =
+  mongoose.models.Automation ||
+  mongoose.model("Automation", AutomationSchema, "automations");
+export default Automation;
