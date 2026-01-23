@@ -1063,7 +1063,7 @@ async function handleTextMessage(event, businessId) {
 
 app.post("/pubsub", async (req, res) => {
   try {
-    console.log("📨 /pubsub called (comments)");
+    console.log("📨 Called pubsub (comments)");
 
     if (PUBSUB_TOKEN) {
       const headerToken = req.get("X-Pubsub-Token");
