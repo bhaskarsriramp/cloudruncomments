@@ -63,6 +63,38 @@ action: {
     isDeleted: { type: Boolean, default: false },
 
     createdAtPlatform: { type: Date },
+
+    /* ---------- INTELLIGENCE ---------- */
+
+// Message-level intent (ONLY for sender="them")
+intent: {
+  type: String,
+  enum: ["personal", "lead", "collaboration", "general"],
+  default: null,
+},
+
+intentConfidence: {
+  type: Number, // 0.0 → 1.0
+  default: null,
+},
+
+intentSource: {
+  type: String, // "hf+gemini"
+  default: null,
+},
+
+intentAnalyzedAt: {
+  type: Date,
+  default: null,
+},
+
+leadSeriousness: {
+  type: Number,
+  min: 0,
+  max: 1,
+  default: 0,
+},
+
   },
   { timestamps: true }
 );

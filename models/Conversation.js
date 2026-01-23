@@ -37,6 +37,46 @@ const ConversationSchema = new Schema(
       default: "auto",
     },
 
+        /* ---------- CONVERSATION INTELLIGENCE ---------- */
+
+conversationIntent: {
+  type: String,
+  enum: ["Personal", "Lead", "Business", "General"],
+  default: "General",
+},
+
+conversationIntentConfidence: {
+  type: Number, // 0.0 → 1.0
+  default: 0,
+},
+
+// Accumulated evidence (THIS PREVENTS FLIPPING)
+intentSignals: {
+  personal: { type: Number, default: 0 },
+  lead: { type: Number, default: 0 },
+  collaboration: { type: Number, default: 0 },
+},
+
+intentSignalsUpdatedAt: {
+  type: Date,
+  default: null,
+},
+
+
+conversationIntentUpdatedAt: {
+  type: Date,
+  default: null,
+},
+
+conversationLeadSeriousness: {
+  type: Number,
+  min: 0,
+  max: 1,
+  default: 0,
+},
+conversationLeadSeriousnessUpdatedAt: Date,
+
+
     // State
     isBlocked: { type: Boolean, default: false },
 
@@ -45,11 +85,15 @@ const ConversationSchema = new Schema(
     unreadCount: { type: Number, default: 0 },
     lastSyncedAt: Date,
     lastMetaCursor: String,
-    lastParticipantMessageAt: {
-  type: Date,
-  index: true
-},
+    lastMetaAfterCursor: String,   // for latest sync
+lastMetaBeforeCursor: String,  // for older sync
+lastParticipantMessageAt: { type: Date, index: true },
+metaSyncCompleted: { type: Boolean, default: false },
 
+notes: {
+  text: { type: String, default: "" },
+  updatedAt: { type: Date }
+},
 
     // Sorting
     lastActivityAt: { type: Date, required: true },
