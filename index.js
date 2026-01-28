@@ -1853,9 +1853,10 @@ async function executeFollowCheckNode({
 
   console.log("🔍 Follow Status:", { userId: senderId, isFollowing });
 
-  if (isFollowing) {
+ if (isFollowing) {
     // User is following
-    console.log("✅ User is following. Sending Success Message + Button.");
+    console.log("✅ User is following. Skipping to next flow node directly.");
+    
     const igUserIdToUpdate = userDetails.id || senderId;
 
     if (igUserIdToUpdate) {
@@ -1867,7 +1868,6 @@ async function executeFollowCheckNode({
                 profilePic: userDetails.profile_pic,
             };
             
-            // Use updateMany to ensure ALL records associated with this igUserId are updated
             const updateResult = await RepliedComment.updateMany(
                 { igUserId: igUserIdToUpdate }, 
                 { $set: updateFields }
@@ -1879,60 +1879,57 @@ async function executeFollowCheckNode({
         }
     }
 
-
-    const followingButtons = flowNode.followingButtons || [];
-
-    // 1. If buttons exist, we send a BUTTON TEMPLATE (Button Message)
-    if (followingButtons.length > 0) {
-      
-      // Create buttons for the payload
-      const buttonPayloads = followingButtons.map(btn => ({
-        type: "postback",
-        title: btn.text,
-        // NEW PAYLOAD FORMAT: To identify this specific button click later
-        payload: `FLOW_BTN_${flowNode.id}_${btn.id}` 
-      }));
-
-      await sendFlowMessage({
-        recipient: { id: senderId },
-        flowNode: {
-          type: "button", // Force type to button
-          message: flowNode.config.followCheckYesMessage,
-          buttons: buttonPayloads // Pass the constructed buttons
-        },
-        pageAccessToken,
-        fbPageId,
-      });
-
-    } else {
-      // 2. Fallback: If no buttons defined, just send text
-      await sendFlowMessage({
-        recipient: { id: senderId },
-        flowNode: {
-          type: "text",
-          message: flowNode.config.followCheckYesMessage,
-        },
-        pageAccessToken,
-        fbPageId,
-      });
-    }
-
     conversation.addHistory({
       flowId: String(flowNode.id),
       flowName: "FOLLOW_CHECK_SUCCESS",
-      messageSent: flowNode.config.followCheckYesMessage,
-      userReply: "Following verified",
+      messageSent: null, // No message sent
+      userReply: "Following verified (auto-skipped)",
     });
 
+    // ✅ DIRECTLY EXECUTE THE ACTIONS IN followingButtons (e.g., Quick Reply)
+    const followingButtons = flowNode.followingButtons || [];
+    
+    if (followingButtons.length > 0) {
+      for (const btn of followingButtons) {
+        if (btn.actions && btn.actions.length > 0) {
+          for (const action of btn.actions) {
+            console.log(`→ Auto-executing action: ${action.type}`);
+            
+            if (action.type === "quickReply") {
+              // Execute nested quick reply directly
+              await executeAction({
+                action,
+                selectedOption: { text: btn.text, id: btn.id },
+                conversation,
+                senderId,
+                pageAccessToken,
+                fbPageId,
+                parentNodeId: flowNode.id,
+              });
+              return { success: true, completed: false, autoAdvanced: true };
+            } else {
+              // Execute other action types
+              await executeAction({
+                action,
+                selectedOption: { text: btn.text, id: btn.id },
+                conversation,
+                senderId,
+                pageAccessToken,
+                fbPageId,
+                parentNodeId: flowNode.id,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // If no actions in followingButtons, mark as completed and move to next node
     conversation.currentFlowId = String(flowNode.id);
     await conversation.save();
 
-    // REMOVED: The code that auto-executed "executeAction" here. 
-    // We now wait for the user to click the button we just sent.
-
-    return { success: true, completed: true };
-
-  } else {
+    return { success: true, completed: true, autoAdvanced: true };
+} else {
     // User not following - send verification button (Existing logic)
     const notFollowingButtons = flowNode.notFollowingButtons || [];
     const verificationButton = notFollowingButtons[0];
@@ -2612,7 +2609,7 @@ async function handlePostback(event) {
 
 
 
-  if (payload.startsWith("FOLLOWCHECK_RECHECK_")) {
+if (payload.startsWith("FOLLOWCHECK_RECHECK_")) {
     const nodeId = payload.replace("FOLLOWCHECK_RECHECK_", "");
 
     const conversation = await ConversationState.findOne({
@@ -2643,25 +2640,103 @@ async function handlePostback(event) {
       return;
     }
 
+    // ✅ Re-check follow status
+    const userDetailsUrl = `${FB_API}/${senderId}`;
+    let userDetails;
     try {
-      const result = await executeFollowCheckNode({
-        flowNode: followCheckNode,
+      const response = await axios.get(userDetailsUrl, {
+        params: {
+          access_token: accessToken,
+          fields: "id,username,profile_pic,is_user_follow_business,is_business_follow_user",
+        },
+      });
+      userDetails = response.data;
+    } catch (err) {
+      console.error("❌ Failed to fetch user follow status:", err.message);
+      userDetails = { is_user_follow_business: false };
+    }
+
+    const isFollowing = userDetails.is_user_follow_business === true;
+    console.log("🔍 Recheck Follow Status:", { userId: senderId, isFollowing });
+
+    if (!isFollowing) {
+      // Still not following - show the same message again
+      console.log("❌ User still not following. Showing retry message.");
+      
+      const notFollowingButtons = followCheckNode.notFollowingButtons || [];
+      const verificationButton = notFollowingButtons[0];
+
+      if (verificationButton) {
+        await sendFlowMessage({
+          recipient: { id: senderId },
+          flowNode: {
+            type: "button",
+            message: followCheckNode.config.followCheckNoMessage,
+            buttons: [
+              {
+                type: "postback",
+                title: verificationButton.text,
+                payload: `FOLLOWCHECK_RECHECK_${followCheckNode.id}`,
+              },
+            ],
+          },
+          pageAccessToken: accessToken,
+          fbPageId,
+        });
+      }
+      return;
+    }
+
+    // ✅ USER IS NOW FOLLOWING - Skip message, directly execute followingButtons actions
+    console.log("✅ User is now following. Skipping to next flow directly.");
+
+    conversation.addHistory({
+      flowId: String(followCheckNode.id),
+      flowName: "FOLLOW_CHECK_VERIFIED",
+      messageSent: null,
+      userReply: "Following verified after retry",
+    });
+
+    const followingButtons = followCheckNode.followingButtons || [];
+    
+    if (followingButtons.length > 0) {
+      for (const btn of followingButtons) {
+        if (btn.actions && btn.actions.length > 0) {
+          for (const action of btn.actions) {
+            console.log(`→ Auto-executing action after verify: ${action.type}`);
+            
+            await executeAction({
+              action,
+              selectedOption: { text: btn.text, id: btn.id },
+              conversation,
+              senderId,
+              pageAccessToken: accessToken,
+              fbPageId,
+              parentNodeId: followCheckNode.id,
+            });
+            
+            // If it's a nested quick reply, we're done (waiting for user input)
+            if (action.type === "quickReply") {
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    // If no actions, move to next node in flow
+    const nextNode = getNextFlowNode(flowConfig, followCheckNode.id);
+    
+    if (nextNode) {
+      await executeFlowNode({
+        flowNode: nextNode,
         conversation,
         senderId,
         pageAccessToken: accessToken,
         fbPageId,
       });
-
-      if (result.completed) {
-        console.log("✅ Follow check passed on retry. Waiting for user to click the success button.");
-        // STOP HERE: The "Open Directions" button has been sent by executeFollowCheckNode.
-        // We do NOT automatically move to nextNode. We wait for the FLOW_BTN_ payload.
-        return;
-      }
-      
-    } catch (err) {
-      console.error("❌ FollowCheck recheck failed:", err.message);
-      conversation.markError(err);
+    } else {
+      conversation.markCompleted();
       await conversation.save();
     }
 
