@@ -12,6 +12,7 @@
     "axios": "^1.7.9",
     "qs": "^6.2.4",
     "fast-levenshtein": "^3.0.0",
-    "agenda": "^5.0.0"
+    "agenda": "^5.0.0",
+    "@google-cloud/vertexai": "^1.10.0"
   }
 }
