@@ -14,7 +14,7 @@ import { publishInboxMessageHTTP, publishConversationUpdate } from "./services/r
 import levenshtein from "fast-levenshtein";
 import agenda from "./services/agenda.js";
 import { findOrCreateConversationByParticipant } from "./services/conversationDiscovery.js";
-
+import { detectLeadRealtime } from "./services/leadDetectionService.js";
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
@@ -979,6 +979,34 @@ async function handleTextMessage(event, businessId) {
     });
   } catch (err) {
     console.error("❌ Redis publish failed:", err.message);
+  }
+
+   try {
+    const { conversation, message } = conversationData;
+
+    // Only analyze messages from participants, not creator's own messages
+    // Also skip media-only messages (no text to analyze)
+    if (message.sender === "them" && message.text && message.text.trim()) {
+      // Fire and forget - don't await, don't block
+      detectLeadRealtime({
+        conversationId: conversation._id,
+        messageId: message._id,
+        messageText: message.text,
+        creatorId: creator._id,
+      }).then((result) => {
+        if (result.processed) {
+          console.log(`[LeadDetect] ✅ Processed in ${result.executionMs}ms`, {
+            filtered: result.filtered,
+            intent: result.newIntent || result.reason,
+          });
+        }
+      }).catch((err) => {
+        console.error("[LeadDetect] ❌ Background error:", err.message);
+      });
+    }
+  } catch (err) {
+    // Don't let lead detection errors affect main flow
+    console.error("[LeadDetect] ❌ Trigger error:", err.message);
   }
 
   // =========================================================
