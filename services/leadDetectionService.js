@@ -1,7 +1,7 @@
 // services/leadDetectionService.js
 import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
-import { zeroShotSingleFilter } from "./zeroShot.js";
+import { quickLocalFilter } from "./quickFilter.js"; // 🔥 NEW: Local filter (no HF)
 import { analyzeConversationIntent } from "./geminiConversationAnalyser.js";
 import { publishConversationUpdate } from "./realtimePublisher.js";
 
@@ -10,43 +10,51 @@ const CONTEXT_MESSAGE_LIMIT = 10;
 /**
  * Real-time lead detection triggered on new message
  * Only processes messages from "them" (participants)
+ * 
+ * Flow:
+ * 1. Quick LOCAL filter (instant, 0ms, no API)
+ * 2. If meaningful → fetch context + Gemini analysis
+ * 3. Update conversation intent
+ * 4. Publish to UI in real-time
  */
 export async function detectLeadRealtime({
   conversationId,
   messageId,
   messageText,
   creatorId,
-  isNewConversation = false, // 🔥 NEW FLAG
+  isNewConversation = false,
 }) {
   const startTime = Date.now();
 
   try {
     // ─────────────────────────────────────────────
-    // STEP 1: Quick HF Filter (is this meaningful?)
+    // STEP 1: Quick LOCAL Filter (instant, no API)
     // ─────────────────────────────────────────────
-    const hfResult = await zeroShotSingleFilter(messageText);
+    const filterResult = quickLocalFilter(messageText);
 
-    // Update message with HF result
+    console.log(`[LeadDetect] Filter: "${messageText?.substring(0, 50)}..." → ${filterResult.label} (pass: ${filterResult.passToGemini})`);
+
+    // Update message with filter result
     await Message.updateOne(
       { _id: messageId },
       {
         $set: {
-          aiProcess: hfResult.passToGemini ? "processing" : "completed",
-          processedAt: hfResult.passToGemini ? undefined : new Date(),
-          hfLabel: hfResult.label,
-          hfConfidence: hfResult.confidence,
+          aiProcess: filterResult.passToGemini ? "processing" : "completed",
+          processedAt: filterResult.passToGemini ? undefined : new Date(),
+          filterLabel: filterResult.label,
+          filterConfidence: filterResult.confidence,
         },
       }
     );
 
-    // If noise, skip Gemini analysis
-    if (!hfResult.passToGemini) {
-      console.log(`[LeadDetect] Message filtered by HF: ${hfResult.label}`);
+    // If noise, skip Gemini analysis (save cost + time)
+    if (!filterResult.passToGemini) {
       return {
         processed: true,
         filtered: true,
-        reason: "HF_FILTERED",
-        label: hfResult.label,
+        reason: "LOCAL_FILTERED",
+        label: filterResult.label,
+        confidence: filterResult.confidence,
         executionMs: Date.now() - startTime,
       };
     }
@@ -57,8 +65,7 @@ export async function detectLeadRealtime({
     let contextMessages = [];
 
     if (isNewConversation) {
-      // 🔥 NEW: For new conversations, just use the current message
-      // No need to query DB - we already have what we need
+      // For new conversations, just use the current message
       console.log(`[LeadDetect] New conversation - analyzing single message`);
       contextMessages = [
         {
@@ -93,6 +100,8 @@ export async function detectLeadRealtime({
       }
     }
 
+    console.log(`[LeadDetect] Analyzing ${contextMessages.length} messages with Gemini...`);
+
     // ─────────────────────────────────────────────
     // STEP 3: Gemini Conversation Analysis
     // ─────────────────────────────────────────────
@@ -105,7 +114,10 @@ export async function detectLeadRealtime({
         $set: {
           aiProcess: "completed",
           processedAt: new Date(),
-          intentSource: geminiResult.error ? "hf+gemini-fallback" : "hf+gemini",
+          intentSource: geminiResult.error ? "local+gemini-fallback" : "local+gemini",
+          geminiIntent: geminiResult.intent,
+          geminiConfidence: geminiResult.confidence,
+          geminiLeadScore: geminiResult.leadScore,
         },
       }
     );
@@ -163,7 +175,11 @@ export async function detectLeadRealtime({
       });
 
       console.log(
-        `[LeadDetect] ✅ ${isNewConversation ? "NEW" : ""} ${previousIntent} → ${geminiResult.intent} (confidence: ${geminiResult.confidence}, leadScore: ${geminiResult.leadScore})`
+        `[LeadDetect] ✅ ${isNewConversation ? "[NEW] " : ""}${previousIntent} → ${geminiResult.intent} (confidence: ${geminiResult.confidence}, leadScore: ${geminiResult.leadScore})`
+      );
+    } else {
+      console.log(
+        `[LeadDetect] ℹ️ No change: ${previousIntent} (analyzed: ${geminiResult.intent})`
       );
     }
 
@@ -190,7 +206,7 @@ export async function detectLeadRealtime({
         { $set: { aiProcess: "failed", aiProcessError: err.message } }
       );
     } catch (updateErr) {
-      // Ignore
+      // Ignore update errors
     }
 
     return {
