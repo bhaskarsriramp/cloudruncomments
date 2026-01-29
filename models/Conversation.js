@@ -28,12 +28,12 @@ const ConversationSchema = new Schema(
     // Labeling
     label: {
       type: String,
-      enum: ["Personal", "Lead", "General"],
+      enum: ["Personal", "Lead", "General", "Business"],
       default: "General",
     },
     labelSource: {
       type: String,
-      enum: ["auto", "manual"],
+      enum: ["auto", "manual", "ai"],
       default: "auto",
     },
 

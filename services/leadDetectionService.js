@@ -155,7 +155,7 @@ export async function detectLeadRealtime({
         conversation.leadFactors = geminiResult.factors;
       }
 
-      conversation.label = geminiResult.intent;
+      conversation.conversationIntent = geminiResult.intent;
       conversation.labelSource = "ai";
 
       await conversation.save();
