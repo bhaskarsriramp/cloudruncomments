@@ -16,6 +16,7 @@ export async function detectLeadRealtime({
   messageId,
   messageText,
   creatorId,
+  isNewConversation = false, // 🔥 NEW FLAG
 }) {
   const startTime = Date.now();
 
@@ -30,8 +31,8 @@ export async function detectLeadRealtime({
       { _id: messageId },
       {
         $set: {
-          aiProcess: "completed",
-          processedAt: new Date(),
+          aiProcess: hfResult.passToGemini ? "processing" : "completed",
+          processedAt: hfResult.passToGemini ? undefined : new Date(),
           hfLabel: hfResult.label,
           hfConfidence: hfResult.confidence,
         },
@@ -39,7 +40,7 @@ export async function detectLeadRealtime({
     );
 
     // If noise, skip Gemini analysis
-    if (!hfResult.passToCgemini) {
+    if (!hfResult.passToGemini) {
       console.log(`[LeadDetect] Message filtered by HF: ${hfResult.label}`);
       return {
         processed: true,
@@ -51,33 +52,63 @@ export async function detectLeadRealtime({
     }
 
     // ─────────────────────────────────────────────
-    // STEP 2: Fetch Conversation Context
+    // STEP 2: Build Conversation Context
     // ─────────────────────────────────────────────
-    const recentMessages = await Message.find({
-      conversationId,
-      text: { $ne: null, $ne: "" },
-    })
-      .sort({ createdAtPlatform: -1 })
-      .limit(CONTEXT_MESSAGE_LIMIT)
-      .select("sender text createdAtPlatform")
-      .lean();
+    let contextMessages = [];
 
-    if (recentMessages.length === 0) {
-      return {
-        processed: true,
-        filtered: true,
-        reason: "NO_MESSAGES",
-        executionMs: Date.now() - startTime,
-      };
+    if (isNewConversation) {
+      // 🔥 NEW: For new conversations, just use the current message
+      // No need to query DB - we already have what we need
+      console.log(`[LeadDetect] New conversation - analyzing single message`);
+      contextMessages = [
+        {
+          sender: "them",
+          text: messageText,
+          createdAtPlatform: new Date(),
+        },
+      ];
+    } else {
+      // Existing conversation - fetch context from DB
+      const recentMessages = await Message.find({
+        conversationId,
+        text: { $ne: null, $ne: "" },
+      })
+        .sort({ createdAtPlatform: -1 })
+        .limit(CONTEXT_MESSAGE_LIMIT)
+        .select("sender text createdAtPlatform")
+        .lean();
+
+      if (recentMessages.length === 0) {
+        // Fallback: use current message if DB query returns nothing
+        contextMessages = [
+          {
+            sender: "them",
+            text: messageText,
+            createdAtPlatform: new Date(),
+          },
+        ];
+      } else {
+        // Reverse to chronological order (oldest first)
+        contextMessages = recentMessages.reverse();
+      }
     }
-
-    // Reverse to chronological order (oldest first)
-    const contextMessages = recentMessages.reverse();
 
     // ─────────────────────────────────────────────
     // STEP 3: Gemini Conversation Analysis
     // ─────────────────────────────────────────────
     const geminiResult = await analyzeConversationIntent(contextMessages);
+
+    // Mark message as processed
+    await Message.updateOne(
+      { _id: messageId },
+      {
+        $set: {
+          aiProcess: "completed",
+          processedAt: new Date(),
+          intentSource: geminiResult.error ? "hf+gemini-fallback" : "hf+gemini",
+        },
+      }
+    );
 
     // ─────────────────────────────────────────────
     // STEP 4: Update Conversation
@@ -91,8 +122,12 @@ export async function detectLeadRealtime({
     const intentChanged = previousIntent !== geminiResult.intent;
     const now = new Date();
 
-    // Only update if intent changed OR lead score increased
+    // Update if:
+    // 1. Intent changed, OR
+    // 2. Lead score increased, OR
+    // 3. New conversation (always set initial intent)
     const shouldUpdate =
+      isNewConversation ||
       intentChanged ||
       (geminiResult.intent === "Lead" &&
         geminiResult.leadScore > (conversation.conversationLeadSeriousness || 0));
@@ -105,6 +140,7 @@ export async function detectLeadRealtime({
       if (geminiResult.intent === "Lead") {
         conversation.conversationLeadSeriousness = geminiResult.leadScore;
         conversation.conversationLeadSeriousnessUpdatedAt = now;
+        conversation.leadFactors = geminiResult.factors;
       }
 
       conversation.label = geminiResult.intent;
@@ -116,8 +152,8 @@ export async function detectLeadRealtime({
       // STEP 5: Publish to UI (Real-time update)
       // ─────────────────────────────────────────────
       await publishConversationUpdate({
-        creatorId,
-        conversationId,
+        creatorId: creatorId.toString(),
+        conversationId: conversationId.toString(),
         update: {
           label: geminiResult.intent,
           labelIntentConfidence: geminiResult.confidence,
@@ -127,25 +163,36 @@ export async function detectLeadRealtime({
       });
 
       console.log(
-        `[LeadDetect] ✅ ${previousIntent} → ${geminiResult.intent} (${geminiResult.confidence})`
+        `[LeadDetect] ✅ ${isNewConversation ? "NEW" : ""} ${previousIntent} → ${geminiResult.intent} (confidence: ${geminiResult.confidence}, leadScore: ${geminiResult.leadScore})`
       );
     }
 
     return {
       processed: true,
       filtered: false,
+      isNewConversation,
       previousIntent,
       newIntent: geminiResult.intent,
-      intentChanged,
+      intentChanged: shouldUpdate,
       confidence: geminiResult.confidence,
       leadScore: geminiResult.leadScore,
       factors: geminiResult.factors,
+      messagesAnalyzed: contextMessages.length,
       executionMs: Date.now() - startTime,
     };
   } catch (err) {
     console.error("[LeadDetect] ❌ Error:", err.message);
 
-    // Don't block message flow on lead detection failure
+    // Mark message as failed
+    try {
+      await Message.updateOne(
+        { _id: messageId },
+        { $set: { aiProcess: "failed", aiProcessError: err.message } }
+      );
+    } catch (updateErr) {
+      // Ignore
+    }
+
     return {
       processed: false,
       error: err.message,

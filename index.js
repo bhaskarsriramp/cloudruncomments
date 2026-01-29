@@ -891,46 +891,46 @@ async function handleTextMessage(event, businessId) {
       skipIfNoConversation: true, // NEW FLAG
     });
 
-    if (existingCheck) {
-      // Conversation exists, use it
-      conversationData = existingCheck;
-    } else {
-      // Conversation doesn't exist, fetch and create it
-      console.log("🆕 No conversation found, fetching from Meta...");
-      
-      const creds = await ensureFreshPageTokenForUser(creator._id);
-      
-      if (!creds.fbPageAccessToken) {
-        console.error("❌ Cannot fetch conversation: no access token");
-        return;
-      }
+if (existingCheck) {
+  // Conversation exists, use it
+  conversationData = { ...existingCheck, isNew: false }; // 🔥 ADD isNew: false
+} else {
+  // Conversation doesn't exist, fetch and create it
+  console.log("🆕 No conversation found, fetching from Meta...");
+  
+  const creds = await ensureFreshPageTokenForUser(creator._id);
+  
+  if (!creds.fbPageAccessToken) {
+    console.error("❌ Cannot fetch conversation: no access token");
+    return;
+  }
 
-      const discoveryResult = await findOrCreateConversationByParticipant({
-        creatorId: creator._id,
-        participantIgUserId: senderId,
-        businessIgUserId: businessId,
-        pageAccessToken: creds.fbPageAccessToken,
-        fbPageId: creds.fbPageId
-      });
+  const discoveryResult = await findOrCreateConversationByParticipant({
+    creatorId: creator._id,
+    participantIgUserId: senderId,
+    businessIgUserId: businessId,
+    pageAccessToken: creds.fbPageAccessToken,
+    fbPageId: creds.fbPageId
+  });
 
-      console.log("✅ Conversation discovered and created");
+  console.log("✅ Conversation discovered and created");
 
-      // Now save the incoming message
-      const { conversation, message } = await persistInboxMessage({
-        creatorId: creator._id,
-        businessIgUserId: businessId,
-        senderIgUserId: senderId,
-        igMessageId: messageId,
-        type,
-        text,
-        mediaUrl,
-        mediaType,
-        action,
-        createdAt: createdAtPlatform,
-      });
+  // Now save the incoming message
+  const { conversation, message } = await persistInboxMessage({
+    creatorId: creator._id,
+    businessIgUserId: businessId,
+    senderIgUserId: senderId,
+    igMessageId: messageId,
+    type,
+    text,
+    mediaUrl,
+    mediaType,
+    action,
+    createdAt: createdAtPlatform,
+  });
 
-      conversationData = { conversation, message };
-    }
+  conversationData = { conversation, message, isNew: true }; // 🔥 ADD isNew: true
+}
 
   } catch (err) {
     console.error("❌ Conversation handling failed:", err.message);
@@ -981,11 +981,11 @@ async function handleTextMessage(event, businessId) {
     console.error("❌ Redis publish failed:", err.message);
   }
 
-   try {
+ try {
     const { conversation, message } = conversationData;
+    const isNewConversation = conversationData.isNew || false;
 
-    // Only analyze messages from participants, not creator's own messages
-    // Also skip media-only messages (no text to analyze)
+    // Only analyze messages from participants with text
     if (message.sender === "them" && message.text && message.text.trim()) {
       // Fire and forget - don't await, don't block
       detectLeadRealtime({
@@ -993,11 +993,14 @@ async function handleTextMessage(event, businessId) {
         messageId: message._id,
         messageText: message.text,
         creatorId: creator._id,
+        isNewConversation, // 🔥 Pass flag to service
       }).then((result) => {
         if (result.processed) {
           console.log(`[LeadDetect] ✅ Processed in ${result.executionMs}ms`, {
+            isNew: result.isNewConversation,
             filtered: result.filtered,
             intent: result.newIntent || result.reason,
+            leadScore: result.leadScore,
           });
         }
       }).catch((err) => {
@@ -1005,7 +1008,6 @@ async function handleTextMessage(event, businessId) {
       });
     }
   } catch (err) {
-    // Don't let lead detection errors affect main flow
     console.error("[LeadDetect] ❌ Trigger error:", err.message);
   }
 
