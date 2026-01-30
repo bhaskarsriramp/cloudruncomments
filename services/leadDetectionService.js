@@ -1,21 +1,15 @@
 // services/leadDetectionService.js
 import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
-import { quickLocalFilter } from "./quickFilter.js"; // 🔥 NEW: Local filter (no HF)
+import { quickLocalFilter } from "./quickFilter.js";
 import { analyzeConversationIntent } from "./geminiConversationAnalyser.js";
 import { publishConversationUpdate } from "./realtimePublisher.js";
 
 const CONTEXT_MESSAGE_LIMIT = 10;
 
 /**
- * Real-time lead detection triggered on new message
- * Only processes messages from "them" (participants)
- * 
- * Flow:
- * 1. Quick LOCAL filter (instant, 0ms, no API)
- * 2. If meaningful → fetch context + Gemini analysis
- * 3. Update conversation intent
- * 4. Publish to UI in real-time
+ * Real-time lead detection + follow-up detection
+ * Triggered on new message from participants
  */
 export async function detectLeadRealtime({
   conversationId,
@@ -47,7 +41,7 @@ export async function detectLeadRealtime({
       }
     );
 
-    // If noise, skip Gemini analysis (save cost + time)
+    // If noise, skip Gemini analysis
     if (!filterResult.passToGemini) {
       return {
         processed: true,
@@ -61,11 +55,11 @@ export async function detectLeadRealtime({
 
     // ─────────────────────────────────────────────
     // STEP 2: Build Conversation Context
+    // Include BOTH user and creator messages for follow-up detection
     // ─────────────────────────────────────────────
     let contextMessages = [];
 
     if (isNewConversation) {
-      // For new conversations, just use the current message
       console.log(`[LeadDetect] New conversation - analyzing single message`);
       contextMessages = [
         {
@@ -75,7 +69,7 @@ export async function detectLeadRealtime({
         },
       ];
     } else {
-      // Existing conversation - fetch context from DB
+      // Fetch recent messages (BOTH sides for follow-up context)
       const recentMessages = await Message.find({
         conversationId,
         text: { $ne: null, $ne: "" },
@@ -86,7 +80,6 @@ export async function detectLeadRealtime({
         .lean();
 
       if (recentMessages.length === 0) {
-        // Fallback: use current message if DB query returns nothing
         contextMessages = [
           {
             sender: "them",
@@ -103,7 +96,7 @@ export async function detectLeadRealtime({
     console.log(`[LeadDetect] Analyzing ${contextMessages.length} messages with Gemini...`);
 
     // ─────────────────────────────────────────────
-    // STEP 3: Gemini Conversation Analysis
+    // STEP 3: Gemini Analysis (Intent + Follow-up)
     // ─────────────────────────────────────────────
     const geminiResult = await analyzeConversationIntent(contextMessages);
 
@@ -123,7 +116,7 @@ export async function detectLeadRealtime({
     );
 
     // ─────────────────────────────────────────────
-    // STEP 4: Update Conversation
+    // STEP 4: Update Conversation (Intent + Follow-up)
     // ─────────────────────────────────────────────
     const conversation = await Conversation.findById(conversationId);
     if (!conversation) {
@@ -134,52 +127,87 @@ export async function detectLeadRealtime({
     const intentChanged = previousIntent !== geminiResult.intent;
     const now = new Date();
 
-    // Update if:
-    // 1. Intent changed, OR
-    // 2. Lead score increased, OR
-    // 3. New conversation (always set initial intent)
-    const shouldUpdate =
+    // Check if intent should update
+    const shouldUpdateIntent =
       isNewConversation ||
       intentChanged ||
       (geminiResult.intent === "Lead" &&
         geminiResult.leadScore > (conversation.conversationLeadSeriousness || 0));
 
-    if (shouldUpdate) {
-      conversation.conversationIntent = geminiResult.intent;
-      conversation.conversationIntentConfidence = geminiResult.confidence;
-      conversation.conversationIntentUpdatedAt = now;
+    // Check if follow-up status changed
+    const previousFollowUpNeeded = conversation.followUpStatus?.needed || false;
+    const followUpChanged = previousFollowUpNeeded !== geminiResult.followUp.needed ||
+      conversation.followUpStatus?.priority !== geminiResult.followUp.priority;
 
-      if (geminiResult.intent === "Lead") {
-        conversation.conversationLeadSeriousness = geminiResult.leadScore;
-        conversation.conversationLeadSeriousnessUpdatedAt = now;
-        conversation.leadFactors = geminiResult.factors;
+    // Update conversation if anything changed
+    if (shouldUpdateIntent || followUpChanged) {
+      
+      // Update intent fields
+      if (shouldUpdateIntent) {
+        conversation.conversationIntent = geminiResult.intent;
+        conversation.conversationIntentConfidence = geminiResult.confidence;
+        conversation.conversationIntentUpdatedAt = now;
+
+        if (geminiResult.intent === "Lead") {
+          conversation.conversationLeadSeriousness = geminiResult.leadScore;
+          conversation.conversationLeadSeriousnessUpdatedAt = now;
+          conversation.leadFactors = geminiResult.factors;
+        }
+
+        conversation.conversationIntent = geminiResult.intent;
+        conversation.labelSource = "ai";
       }
 
-      conversation.conversationIntent = geminiResult.intent;
-      conversation.labelSource = "ai";
+      // 🔥 NEW: Update follow-up status
+      if (geminiResult.followUp.needed) {
+        conversation.followUpStatus = {
+          needed: true,
+          priority: geminiResult.followUp.priority,
+          reason: geminiResult.followUp.reason,
+          suggestedAction: geminiResult.followUp.suggestedAction,
+          detectedAt: conversation.followUpStatus?.needed ? conversation.followUpStatus.detectedAt : now,
+          dismissedAt: null,  // Reset if follow-up is needed again
+          completedAt: null,
+        };
+      } else {
+        conversation.followUpStatus = {
+          needed: false,
+          priority: null,
+          reason: geminiResult.followUp.reason,
+          suggestedAction: null,
+          detectedAt: null,
+          dismissedAt: null,
+          completedAt: null,
+        };
+      }
+      conversation.followUpAnalyzedAt = now;
 
       await conversation.save();
 
       // ─────────────────────────────────────────────
-      // STEP 5: Publish to UI (Real-time update)
+      // STEP 5: Publish to UI (Intent + Follow-up)
       // ─────────────────────────────────────────────
       await publishConversationUpdate({
         creatorId: creatorId.toString(),
         conversationId: conversationId.toString(),
         update: {
-          label: geminiResult.intent,
+          // Intent fields
+          label: conversation.conversationIntent,
           labelIntentConfidence: geminiResult.confidence,
           labelLeadSeriousness: geminiResult.leadScore || 0,
           factors: geminiResult.factors || [],
+          
+          // 🔥 NEW: Follow-up fields
+          followUpStatus: conversation.followUpStatus,
         },
       });
 
       console.log(
-        `[LeadDetect] ✅ ${isNewConversation ? "[NEW] " : ""}${previousIntent} → ${geminiResult.intent} (confidence: ${geminiResult.confidence}, leadScore: ${geminiResult.leadScore})`
+        `[LeadDetect] ✅ ${isNewConversation ? "[NEW] " : ""}Intent: ${previousIntent} → ${geminiResult.intent} | FollowUp: ${geminiResult.followUp.needed ? geminiResult.followUp.priority : "not needed"}`
       );
     } else {
       console.log(
-        `[LeadDetect] ℹ️ No change: ${previousIntent} (analyzed: ${geminiResult.intent})`
+        `[LeadDetect] ℹ️ No changes: Intent=${previousIntent}, FollowUp=${previousFollowUpNeeded ? "needed" : "not needed"}`
       );
     }
 
@@ -189,24 +217,25 @@ export async function detectLeadRealtime({
       isNewConversation,
       previousIntent,
       newIntent: geminiResult.intent,
-      intentChanged: shouldUpdate,
+      intentChanged: shouldUpdateIntent,
       confidence: geminiResult.confidence,
       leadScore: geminiResult.leadScore,
       factors: geminiResult.factors,
+      followUp: geminiResult.followUp,
+      followUpChanged,
       messagesAnalyzed: contextMessages.length,
       executionMs: Date.now() - startTime,
     };
   } catch (err) {
     console.error("[LeadDetect] ❌ Error:", err.message);
 
-    // Mark message as failed
     try {
       await Message.updateOne(
         { _id: messageId },
         { $set: { aiProcess: "failed", aiProcessError: err.message } }
       );
     } catch (updateErr) {
-      // Ignore update errors
+      // Ignore
     }
 
     return {

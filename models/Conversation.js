@@ -76,6 +76,17 @@ conversationLeadSeriousness: {
 },
 conversationLeadSeriousnessUpdatedAt: Date,
 
+followUpStatus: {
+  needed: { type: Boolean, default: false },
+  priority: { type: String, enum: ["high", "medium", "low", null], default: null },
+  reason: { type: String, default: null },
+  suggestedAction: { type: String, default: null },
+  detectedAt: { type: Date, default: null },
+  dismissedAt: { type: Date, default: null },    // When creator dismisses
+  completedAt: { type: Date, default: null },    // When creator follows up
+},
+followUpAnalyzedAt: { type: Date, default: null },
+
 
     // State
     isBlocked: { type: Boolean, default: false },
