@@ -158,7 +158,7 @@ export async function detectLeadRealtime({
         conversation.labelSource = "ai";
       }
 
-      // 🔥 NEW: Update follow-up status
+      // 🔥 Update follow-up status
       if (geminiResult.followUp.needed) {
         conversation.followUpStatus = {
           needed: true,
@@ -166,7 +166,7 @@ export async function detectLeadRealtime({
           reason: geminiResult.followUp.reason,
           suggestedAction: geminiResult.followUp.suggestedAction,
           detectedAt: conversation.followUpStatus?.needed ? conversation.followUpStatus.detectedAt : now,
-          dismissedAt: null,  // Reset if follow-up is needed again
+          dismissedAt: null,
           completedAt: null,
         };
       } else {
@@ -185,9 +185,9 @@ export async function detectLeadRealtime({
       await conversation.save();
 
       // ─────────────────────────────────────────────
-      // STEP 5: Publish to UI (Intent + Follow-up)
+      // STEP 5: Publish to UI (Fire-and-forget - NO await)
       // ─────────────────────────────────────────────
-      await publishConversationUpdate({
+      publishConversationUpdate({
         creatorId: creatorId.toString(),
         conversationId: conversationId.toString(),
         update: {
@@ -197,10 +197,11 @@ export async function detectLeadRealtime({
           labelLeadSeriousness: geminiResult.leadScore || 0,
           factors: geminiResult.factors || [],
           
-          // 🔥 NEW: Follow-up fields
+          // Follow-up fields
           followUpStatus: conversation.followUpStatus,
         },
       });
+      // 🔥 NO await - fire and forget, don't block
 
       console.log(
         `[LeadDetect] ✅ ${isNewConversation ? "[NEW] " : ""}Intent: ${previousIntent} → ${geminiResult.intent} | FollowUp: ${geminiResult.followUp.needed ? geminiResult.followUp.priority : "not needed"}`

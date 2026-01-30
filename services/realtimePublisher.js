@@ -3,70 +3,173 @@ import axios from "axios";
 
 const REALTIME_URL = "http://34.180.49.15:3000";
 
-export async function publishInboxMessageHTTP({
+// Axios instance with optimized settings
+const realtimeClient = axios.create({
+  baseURL: REALTIME_URL,
+  timeout: 8000, // 8 second timeout (increased from 3s)
+  proxy: false,
+  headers: {
+    "Content-Type": "application/json",
+  },
+  // Disable keep-alive to avoid connection pooling issues
+  httpAgent: undefined,
+  httpsAgent: undefined,
+});
+
+/**
+ * Fire-and-forget publish - does NOT block the caller
+ * Failures are logged but don't affect the main flow
+ */
+function fireAndForget(promise, label) {
+  promise
+    .then(() => {
+      // Success - optionally log
+    })
+    .catch((err) => {
+      console.error(`❌ [${label}] Fire-and-forget failed:`, err.message);
+    });
+}
+
+/**
+ * Retry wrapper with exponential backoff
+ */
+async function retryWithBackoff(fn, maxRetries = 2, initialDelay = 500) {
+  let lastError;
+  let delay = initialDelay;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      
+      const isTimeout = err.code === "ECONNABORTED" || err.message?.includes("timeout");
+      const isNetworkError = err.code === "ECONNREFUSED" || err.code === "ENOTFOUND";
+      
+      // Don't retry on non-recoverable errors
+      if (!isTimeout && !isNetworkError && err.response?.status < 500) {
+        throw err;
+      }
+
+      if (attempt < maxRetries) {
+        console.warn(`⚠️ Retry ${attempt}/${maxRetries} after ${delay}ms...`);
+        await new Promise((r) => setTimeout(r, delay));
+        delay *= 2; // Exponential backoff
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+/**
+ * Publish new message to inbox (fire-and-forget)
+ * This should NEVER block webhook processing
+ */
+export function publishInboxMessageHTTP({
   creatorId,
   conversationId,
   message,
-  conversation
+  conversation,
 }) {
-  try {
-    // console.log("Publishing to:", REALTIME_URL); // Optional: reduce noise
-
-    await axios.post(`${REALTIME_URL}/publish/inbox`, {
+  // Fire and forget - don't await
+  fireAndForget(
+    realtimeClient.post("/publish/inbox", {
       creatorId,
       conversationId,
       message,
-      conversation
-    }, { timeout: 3000,
-      proxy: false
-     });
-  } catch (e) {
-    console.error("❌ realtime publish failed", e.message);
-  }
+      conversation,
+    }),
+    "inbox-message"
+  );
 }
 
-export async function publishConversationUpdate({
+/**
+ * Publish conversation update (label, followUp, etc.)
+ * Fire-and-forget with internal retry
+ */
+export function publishConversationUpdate({
   creatorId,
   conversationId,
-  update
+  update,
+}) {
+  // Fire and forget with retry
+  fireAndForget(
+    retryWithBackoff(
+      () =>
+        realtimeClient.post("/publish/conversation-update", {
+          creatorId,
+          conversationId,
+          update,
+        }),
+      2, // 2 retries
+      300 // 300ms initial delay
+    ).then(() => {
+      console.log(`✅ Published conversation update for: ${conversationId}`);
+    }),
+    "conversation-update"
+  );
+}
+
+/**
+ * Publish new conversation creation (fire-and-forget)
+ */
+export function publishConversationCreated({ creatorId, conversation }) {
+  const payload = {
+    creatorId: String(creatorId),
+    conversation: conversation,
+  };
+
+  // Fire and forget with retry
+  fireAndForget(
+    retryWithBackoff(
+      () => realtimeClient.post("/publish/conversation-created", payload),
+      2,
+      300
+    ).then(() => {
+      console.log("✅ Published conversation:created to creator room");
+    }),
+    "conversation-created"
+  );
+}
+
+/**
+ * BLOCKING version - use only when you NEED to wait for result
+ * Example: When the response depends on publish success
+ */
+export async function publishInboxMessageHTTPBlocking({
+  creatorId,
+  conversationId,
+  message,
+  conversation,
 }) {
   try {
-    await axios.post(`${REALTIME_URL}/publish/conversation-update`, {
-      creatorId,
-      conversationId,
-      update
-    }, { timeout: 3000, proxy: false });
-    
-    console.log(`✅ Published conversation update for: ${conversationId}`);
-  } catch (e) {
-    console.error("❌ conversation update publish failed", e.message);
+    await retryWithBackoff(
+      () =>
+        realtimeClient.post("/publish/inbox", {
+          creatorId,
+          conversationId,
+          message,
+          conversation,
+        }),
+      3, // 3 retries for blocking calls
+      500
+    );
+    return { success: true };
+  } catch (err) {
+    console.error("❌ Blocking inbox publish failed:", err.message);
+    return { success: false, error: err.message };
   }
 }
 
 /**
- * 🆕 Publish new conversation creation to creator's room
+ * Health check for realtime server
  */
-export async function publishConversationCreated({ creatorId, conversation }) {
+export async function checkRealtimeHealth() {
   try {
-    // 🔥 FIX: Do not manually destruct/reconstruct the object here.
-    // conversationDiscovery.js already formats this object with the full 'participant' details.
-    // We just pass it through to the bridge.
-
-    const payload = {
-      creatorId: String(creatorId),
-      conversation: conversation 
-    };
-
-    const res = await axios.post(`${REALTIME_URL}/publish/conversation-created`,
-      payload,
-       { timeout: 3000, proxy: false });
-
-    if (res.status !== 200) {
-      console.error("❌ Failed to publish conversation:created");
-    } else {
-      console.log("✅ Published conversation:created to creator room");
-    }
-  } catch (err) {
-    console.error("❌ publishConversationCreated error:", err.message);
+    const res = await realtimeClient.get("/health", { timeout: 3000 });
+    return res.status === 200;
+  } catch {
+    return false;
   }
 }
