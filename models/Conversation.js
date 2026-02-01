@@ -86,6 +86,11 @@ followUpStatus: {
   completedAt: { type: Date, default: null },    // When creator follows up
 },
 followUpAnalyzedAt: { type: Date, default: null },
+conversationLeadQuality: {
+  type: String,
+  enum: ["none", "low", "medium", "high", "hot"],
+  default: "none",
+},
 
 
     // State

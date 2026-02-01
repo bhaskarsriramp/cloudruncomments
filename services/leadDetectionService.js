@@ -1,15 +1,16 @@
 // services/leadDetectionService.js
 import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
-import { quickLocalFilter } from "./quickFilter.js";
 import { analyzeConversationIntent } from "./geminiConversationAnalyser.js";
 import { publishConversationUpdate } from "./realtimePublisher.js";
 
-const CONTEXT_MESSAGE_LIMIT = 10;
+const CONTEXT_MESSAGE_LIMIT = 15; // Increased for better context
 
 /**
  * Real-time lead detection + follow-up detection
  * Triggered on new message from participants
+ * 
+ * NO LOCAL FILTERING - Every message goes to Gemini for full context analysis
  */
 export async function detectLeadRealtime({
   conversationId,
@@ -22,40 +23,40 @@ export async function detectLeadRealtime({
 
   try {
     // ─────────────────────────────────────────────
-    // STEP 1: Quick LOCAL Filter (instant, no API)
+    // STEP 1: Skip only truly empty messages
     // ─────────────────────────────────────────────
-    const filterResult = quickLocalFilter(messageText);
-
-    console.log(`[LeadDetect] Filter: "${messageText?.substring(0, 50)}..." → ${filterResult.label} (pass: ${filterResult.passToGemini})`);
-
-    // Update message with filter result
-    await Message.updateOne(
-      { _id: messageId },
-      {
-        $set: {
-          aiProcess: filterResult.passToGemini ? "processing" : "completed",
-          processedAt: filterResult.passToGemini ? undefined : new Date(),
-          filterLabel: filterResult.label,
-          filterConfidence: filterResult.confidence,
-        },
-      }
-    );
-
-    // If noise, skip Gemini analysis
-    if (!filterResult.passToGemini) {
+    if (!messageText || messageText.trim() === "") {
+      console.log(`[LeadDetect] Skipping empty message`);
+      
+      await Message.updateOne(
+        { _id: messageId },
+        {
+          $set: {
+            aiProcess: "skipped",
+            processedAt: new Date(),
+            skipReason: "empty_message",
+          },
+        }
+      );
+      
       return {
-        processed: true,
-        filtered: true,
-        reason: "LOCAL_FILTERED",
-        label: filterResult.label,
-        confidence: filterResult.confidence,
+        processed: false,
+        reason: "EMPTY_MESSAGE",
         executionMs: Date.now() - startTime,
       };
     }
 
+    console.log(`[LeadDetect] Processing: "${messageText.substring(0, 50)}..."`);
+
+    // Mark as processing
+    await Message.updateOne(
+      { _id: messageId },
+      { $set: { aiProcess: "processing" } }
+    );
+
     // ─────────────────────────────────────────────
     // STEP 2: Build Conversation Context
-    // Include BOTH user and creator messages for follow-up detection
+    // Include ALL recent messages for full context
     // ─────────────────────────────────────────────
     let contextMessages = [];
 
@@ -69,10 +70,10 @@ export async function detectLeadRealtime({
         },
       ];
     } else {
-      // Fetch recent messages (BOTH sides for follow-up context)
+      // Fetch recent messages (BOTH sides for full context)
       const recentMessages = await Message.find({
         conversationId,
-        text: { $ne: null, $ne: "" },
+        text: { $exists: true, $ne: null },
       })
         .sort({ createdAtPlatform: -1 })
         .limit(CONTEXT_MESSAGE_LIMIT)
@@ -107,11 +108,11 @@ export async function detectLeadRealtime({
         $set: {
           aiProcess: "completed",
           processedAt: new Date(),
-          intentSource: geminiResult.error ? "local+gemini-fallback" : "local+gemini",
+          intentSource: geminiResult.error ? "gemini-fallback" : "gemini",
           geminiIntent: geminiResult.intent,
           geminiConfidence: geminiResult.confidence,
           geminiLeadScore: geminiResult.leadScore,
-          geminiLeadQuality: geminiResult.leadQuality, // 🔥 NEW: Store quality label
+          geminiLeadQuality: geminiResult.leadQuality,
         },
       }
     );
@@ -152,7 +153,7 @@ export async function detectLeadRealtime({
         if (geminiResult.intent === "Lead") {
           conversation.conversationLeadSeriousness = geminiResult.leadScore;
           conversation.conversationLeadSeriousnessUpdatedAt = now;
-          conversation.conversationLeadQuality = geminiResult.leadQuality; // 🔥 NEW
+          conversation.conversationLeadQuality = geminiResult.leadQuality;
           conversation.leadFactors = geminiResult.factors;
         } else {
           // Clear lead fields if not a lead
@@ -201,7 +202,7 @@ export async function detectLeadRealtime({
           label: conversation.conversationIntent,
           labelIntentConfidence: geminiResult.confidence,
           labelLeadSeriousness: geminiResult.leadScore || 0,
-          labelLeadQuality: geminiResult.leadQuality || "none", // 🔥 NEW
+          labelLeadQuality: geminiResult.leadQuality || "none",
           factors: geminiResult.factors || [],
           
           // Follow-up fields
@@ -215,20 +216,19 @@ export async function detectLeadRealtime({
       );
     } else {
       console.log(
-        `[LeadDetect] ℹ️ No changes: Intent=${previousIntent}, FollowUp=${previousFollowUpNeeded ? "needed" : "not needed"}`
+        `[LeadDetect] ℹ️ No changes: Intent=${previousIntent}, LeadScore=${geminiResult.leadScore?.toFixed(2)}, FollowUp=${previousFollowUpNeeded ? "needed" : "not needed"}`
       );
     }
 
     return {
       processed: true,
-      filtered: false,
       isNewConversation,
       previousIntent,
       newIntent: geminiResult.intent,
       intentChanged: shouldUpdateIntent,
       confidence: geminiResult.confidence,
       leadScore: geminiResult.leadScore,
-      leadQuality: geminiResult.leadQuality, // 🔥 NEW
+      leadQuality: geminiResult.leadQuality,
       factors: geminiResult.factors,
       followUp: geminiResult.followUp,
       followUpChanged,

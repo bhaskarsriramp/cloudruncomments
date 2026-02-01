@@ -22,9 +22,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const SYSTEM_PROMPT = `
 You analyze Instagram DM conversations for fitness creators to:
-1. Identify potential leads/customers
+1. Identify potential leads/customers  
 2. Accurately score lead SERIOUSNESS (not just interest)
-3. Detect if follow-up is needed
+3. Detect if the creator needs to follow up
+
+You will receive ALL messages including greetings, short replies, and nudges. Analyze the FULL conversation context.
 
 ## PART 1: INTENT CLASSIFICATION
 
@@ -32,6 +34,10 @@ Classify the OVERALL conversation intent as ONE of:
 - General (casual chat, greetings, no buying intent)
 - Lead (interested in fitness programs, coaching, pricing)
 - Business (collaboration, sponsorship, partnership)
+
+IMPORTANT: Intent should reflect the ENTIRE conversation, not just the latest message.
+- If user previously showed lead intent but latest message is "??" → Still a Lead
+- If conversation started with lead interest → Keep as Lead until clearly abandoned
 
 ## PART 2: LEAD SCORE (CRITICAL - READ CAREFULLY)
 
@@ -41,9 +47,9 @@ This is NOT just about showing interest - it's about purchase readiness.
 ### LEAD SCORE RUBRIC:
 
 **0.0-0.2 (Not a Lead / Noise)**
-- Just greetings ("Hi", "Hello")
+- Just greetings ("Hi", "Hello") with no follow-up
 - Random questions unrelated to services
-- Single word responses
+- Single word responses with no context
 
 **0.2-0.4 (Casual Inquiry - LOW quality lead)**
 - Generic questions like "What programs do you have?"
@@ -82,32 +88,42 @@ This is NOT just about showing interest - it's about purchase readiness.
 ❌ "How much?" = 0.4 (price shopping)
 ✅ "I'm 85kg, want to reach 60kg in 6 months. What's your 1:1 coaching fee?" = 0.8 (specific goal + timeline + service)
 
-❌ "Do you have online coaching?" = 0.35 (general inquiry)
-✅ "I work from home and need online coaching. I've been trying to lose weight for 2 years. Can you help?" = 0.7 (context + pain point + specific need)
-
-## PART 3: FOLLOW-UP DETECTION
+## PART 3: FOLLOW-UP DETECTION (VERY IMPORTANT)
 
 Analyze if the creator needs to follow up with this user.
 
-Follow-up is needed when:
-- User asked a question that creator hasn't answered
-- Creator replied but user went silent (potential interest lost)
-- User showed interest but conversation stalled
-- User said "will think about it" / "let me check" / "later"
-- Pricing was discussed but no closure
-- User seemed interested but didn't commit
+### FOLLOW-UP IS NEEDED WHEN:
 
-Follow-up is NOT needed when:
-- Conversation just started (< 2 messages)
-- User clearly said no/not interested
+1. **User Nudge Detected** (HIGHEST PRIORITY)
+   - User sent "?", "??", "???", "hello?", "are you there?"
+   - User sent repeated messages without creator response
+   - User is clearly waiting → followUp.needed = TRUE, priority = "high"
+
+2. **Unanswered Question**
+   - User asked a question that creator hasn't answered
+   - Last message from user is a question
+
+3. **Stalled Conversation**
+   - Creator replied but user went silent (>24h)
+   - User showed interest but conversation stopped
+   - User said "will think about it" / "let me check" / "later"
+
+4. **Pricing Discussion Without Closure**
+   - Pricing was discussed but no commitment
+   - User asked about cost but didn't proceed
+
+### FOLLOW-UP IS NOT NEEDED WHEN:
+
+- User clearly said no/not interested ("not now", "maybe later", "no thanks")
 - User already enrolled/converted
-- Creator is waiting for user's response to a question
-- Last message is from user (ball is in creator's court to respond, not follow-up)
+- Creator just sent a message (waiting for user's response)
+- Conversation naturally concluded
 
-Priority levels:
-- high: Hot lead gone cold (leadScore > 0.6), pricing discussed, strong interest shown
-- medium: Moderate interest (leadScore 0.4-0.6), general inquiry unanswered
-- low: Mild interest (leadScore < 0.4), casual conversation stalled
+### PRIORITY LEVELS:
+
+- **high**: User is actively waiting (sent "??", "hello?"), OR hot lead gone cold (leadScore > 0.6)
+- **medium**: Moderate interest (leadScore 0.4-0.6), general inquiry unanswered
+- **low**: Mild interest (leadScore < 0.4), casual conversation stalled
 
 ## RESPONSE FORMAT
 
@@ -122,18 +138,20 @@ Respond ONLY with valid JSON (no markdown, no backticks):
     "needed": true|false,
     "priority": "high|medium|low|null",
     "reason": "Brief explanation of why follow-up is needed or not",
-    "suggestedAction": "Specific suggestion for what creator should do (only if needed)"
+    "suggestedAction": "Specific suggestion for what creator should do (only if needed)",
+    "isUserWaiting": true|false
   }
 }
 
 ## RULES
-- Be conservative with intent - prefer General if unsure
+- Analyze the FULL conversation, not just the last message
+- If user previously showed lead intent, maintain that context
+- User nudges ("??", "hello?") should ALWAYS trigger followUp.needed = true with priority = "high"
 - Be STRICT with leadScore - most inquiries are 0.2-0.5, not 0.6+
 - Only give leadScore > 0.6 if user shares SPECIFIC goals or asks HOW TO JOIN
-- Be helpful with follow-up - help creator not lose leads
-- suggestedAction should be specific and actionable
-- If followUp.needed is false, set priority to null and suggestedAction to null
 - Set leadQuality based on score: none(0-0.2), low(0.2-0.4), medium(0.4-0.6), high(0.6-0.8), hot(0.8-1.0)
+- If followUp.needed is false, set priority to null and suggestedAction to null
+- isUserWaiting should be true if the latest message suggests user is waiting for response
 `;
 
 /**
@@ -194,6 +212,7 @@ export async function analyzeConversationIntent(messages) {
         priority: null,
         reason: "No messages",
         suggestedAction: null,
+        isUserWaiting: false,
       },
     };
   }
@@ -203,14 +222,17 @@ export async function analyzeConversationIntent(messages) {
   const conversationText = messages
     .map((m) => {
       const sender = m.sender === "me" ? "Creator" : "User";
-      const text = (m.text || "").replace(/[\r\n]+/g, " ").trim().substring(0, 200);
+      const text = (m.text || "[empty]").replace(/[\r\n]+/g, " ").trim().substring(0, 200);
       
       // Calculate time ago for context
       let timeAgo = "";
       if (m.createdAtPlatform) {
         const msgDate = new Date(m.createdAtPlatform);
         const hoursAgo = Math.floor((now - msgDate) / (1000 * 60 * 60));
-        if (hoursAgo < 24) {
+        if (hoursAgo < 1) {
+          const minsAgo = Math.floor((now - msgDate) / (1000 * 60));
+          timeAgo = `(${minsAgo}m ago)`;
+        } else if (hoursAgo < 24) {
           timeAgo = `(${hoursAgo}h ago)`;
         } else {
           const daysAgo = Math.floor(hoursAgo / 24);
@@ -222,11 +244,27 @@ export async function analyzeConversationIntent(messages) {
     })
     .join("\n");
 
-  // Add context about last message
+  // Add context about last message and conversation state
   const lastMessage = messages[messages.length - 1];
   const lastSender = lastMessage?.sender === "me" ? "Creator" : "User";
   
-  const contextNote = `\n\n[Last message was from: ${lastSender}]`;
+  // Count consecutive user messages at end (indicates waiting)
+  let consecutiveUserMessages = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].sender !== "me") {
+      consecutiveUserMessages++;
+    } else {
+      break;
+    }
+  }
+  
+  const contextNote = `
+
+[Conversation State]
+- Last message from: ${lastSender}
+- Total messages: ${messages.length}
+- Consecutive user messages at end: ${consecutiveUserMessages}
+- User waiting for response: ${consecutiveUserMessages > 0 ? "YES" : "NO"}`;
 
   const fullPrompt = `${SYSTEM_PROMPT}\n\nConversation (${messages.length} messages):\n${conversationText}${contextNote}`;
 
@@ -282,6 +320,7 @@ export async function analyzeConversationIntent(messages) {
         suggestedAction: parsed.followUp?.suggestedAction 
           ? String(parsed.followUp.suggestedAction).substring(0, 300) 
           : null,
+        isUserWaiting: Boolean(parsed.followUp?.isUserWaiting),
       };
 
       // If not needed, clear other fields
@@ -290,7 +329,7 @@ export async function analyzeConversationIntent(messages) {
         followUp.suggestedAction = null;
       }
 
-      console.log(`[Gemini] Intent: ${intent} (${confidence.toFixed(2)}) | LeadScore: ${leadScore.toFixed(2)} (${leadQuality}) | FollowUp: ${followUp.needed ? followUp.priority : 'not needed'}`);
+      console.log(`[Gemini] Intent: ${intent} (${confidence.toFixed(2)}) | LeadScore: ${leadScore.toFixed(2)} (${leadQuality}) | FollowUp: ${followUp.needed ? followUp.priority : 'not needed'} | UserWaiting: ${followUp.isUserWaiting}`);
 
       return {
         intent,
@@ -337,6 +376,7 @@ export async function analyzeConversationIntent(messages) {
           priority: null,
           reason: "Analysis failed",
           suggestedAction: null,
+          isUserWaiting: false,
         },
         error: true,
       };
@@ -355,6 +395,7 @@ export async function analyzeConversationIntent(messages) {
       priority: null,
       reason: "Max retries exceeded",
       suggestedAction: null,
+      isUserWaiting: false,
     },
     error: true,
   };
