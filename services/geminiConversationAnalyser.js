@@ -10,7 +10,7 @@ const model = vertexAI.getGenerativeModel({
   model: "gemini-2.5-flash",
   generationConfig: {
     temperature: 0.1,
-    maxOutputTokens: 700, // Increased for follow-up response
+    maxOutputTokens: 800,
   },
 });
 
@@ -23,7 +23,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const SYSTEM_PROMPT = `
 You analyze Instagram DM conversations for fitness creators to:
 1. Identify potential leads/customers
-2. Detect if follow-up is needed
+2. Accurately score lead SERIOUSNESS (not just interest)
+3. Detect if follow-up is needed
 
 ## PART 1: INTENT CLASSIFICATION
 
@@ -32,12 +33,59 @@ Classify the OVERALL conversation intent as ONE of:
 - Lead (interested in fitness programs, coaching, pricing)
 - Business (collaboration, sponsorship, partnership)
 
-Estimate:
-- confidence (0.0-1.0): How confident you are
-- leadScore (0.0-1.0): How serious/ready to buy (only if Lead)
-- factors: Array of reasons for classification
+## PART 2: LEAD SCORE (CRITICAL - READ CAREFULLY)
 
-## PART 2: FOLLOW-UP DETECTION
+The leadScore (0.0-1.0) measures how SERIOUS and READY TO BUY the user is.
+This is NOT just about showing interest - it's about purchase readiness.
+
+### LEAD SCORE RUBRIC:
+
+**0.0-0.2 (Not a Lead / Noise)**
+- Just greetings ("Hi", "Hello")
+- Random questions unrelated to services
+- Single word responses
+
+**0.2-0.4 (Casual Inquiry - LOW quality lead)**
+- Generic questions like "What programs do you have?"
+- "What do you offer?"
+- "Tell me about your services"
+- No personal context or goals shared
+- Just browsing/exploring, not committed
+
+**0.4-0.6 (Interested but Uncommitted - MEDIUM quality lead)**
+- Asking about pricing WITHOUT sharing goals
+- Asking about timing/schedule
+- Shows some interest but vague about needs
+- "How much does it cost?"
+- "When are your classes?"
+
+**0.6-0.8 (Serious Intent - HIGH quality lead)**
+- Shares SPECIFIC fitness goals (e.g., "lose 10kg", "build muscle")
+- Mentions specific services they want (e.g., "1:1 coaching", "diet plan")
+- Asks detailed questions about methodology
+- Shows urgency ("I want to start soon", "this month")
+- Shares current situation ("I'm 85kg, want to reach 65kg")
+
+**0.8-1.0 (Hot Lead - VERY HIGH quality, ready to convert)**
+- Explicitly asks HOW TO JOIN/ENROLL
+- Asks for payment details
+- Shares contact info (phone, WhatsApp)
+- Says "I'm ready to start" / "Sign me up"
+- Already decided, just needs logistics
+- Mentions budget they're willing to spend
+
+### CRITICAL DISTINCTION:
+
+❌ "What programs do you have?" = 0.3 (just browsing)
+✅ "I want to lose 25kg, do you have 1:1 coaching?" = 0.75 (specific goal + specific service)
+
+❌ "How much?" = 0.4 (price shopping)
+✅ "I'm 85kg, want to reach 60kg in 6 months. What's your 1:1 coaching fee?" = 0.8 (specific goal + timeline + service)
+
+❌ "Do you have online coaching?" = 0.35 (general inquiry)
+✅ "I work from home and need online coaching. I've been trying to lose weight for 2 years. Can you help?" = 0.7 (context + pain point + specific need)
+
+## PART 3: FOLLOW-UP DETECTION
 
 Analyze if the creator needs to follow up with this user.
 
@@ -57,9 +105,9 @@ Follow-up is NOT needed when:
 - Last message is from user (ball is in creator's court to respond, not follow-up)
 
 Priority levels:
-- high: Hot lead gone cold, pricing discussed, strong interest shown
-- medium: Moderate interest, general inquiry unanswered
-- low: Mild interest, casual conversation stalled
+- high: Hot lead gone cold (leadScore > 0.6), pricing discussed, strong interest shown
+- medium: Moderate interest (leadScore 0.4-0.6), general inquiry unanswered
+- low: Mild interest (leadScore < 0.4), casual conversation stalled
 
 ## RESPONSE FORMAT
 
@@ -68,6 +116,7 @@ Respond ONLY with valid JSON (no markdown, no backticks):
   "intent": "General|Lead|Business",
   "confidence": 0.85,
   "leadScore": 0.0,
+  "leadQuality": "none|low|medium|high|hot",
   "factors": ["reason1", "reason2"],
   "followUp": {
     "needed": true|false,
@@ -79,9 +128,12 @@ Respond ONLY with valid JSON (no markdown, no backticks):
 
 ## RULES
 - Be conservative with intent - prefer General if unsure
+- Be STRICT with leadScore - most inquiries are 0.2-0.5, not 0.6+
+- Only give leadScore > 0.6 if user shares SPECIFIC goals or asks HOW TO JOIN
 - Be helpful with follow-up - help creator not lose leads
 - suggestedAction should be specific and actionable
 - If followUp.needed is false, set priority to null and suggestedAction to null
+- Set leadQuality based on score: none(0-0.2), low(0.2-0.4), medium(0.4-0.6), high(0.6-0.8), hot(0.8-1.0)
 `;
 
 /**
@@ -114,9 +166,20 @@ function extractJson(text) {
 }
 
 /**
+ * Map leadScore to quality label
+ */
+function getLeadQuality(score) {
+  if (score >= 0.8) return "hot";
+  if (score >= 0.6) return "high";
+  if (score >= 0.4) return "medium";
+  if (score >= 0.2) return "low";
+  return "none";
+}
+
+/**
  * Analyze conversation for intent AND follow-up status
  * @param {Array<{ sender: string, text: string, createdAtPlatform: Date }>} messages
- * @returns {Promise<{ intent, confidence, leadScore, factors, followUp }>}
+ * @returns {Promise<{ intent, confidence, leadScore, leadQuality, factors, followUp }>}
  */
 export async function analyzeConversationIntent(messages) {
   if (!messages || messages.length === 0) {
@@ -124,6 +187,7 @@ export async function analyzeConversationIntent(messages) {
       intent: "General",
       confidence: 0,
       leadScore: 0,
+      leadQuality: "none",
       factors: ["No messages to analyze"],
       followUp: {
         needed: false,
@@ -194,12 +258,18 @@ export async function analyzeConversationIntent(messages) {
         : "General";
 
       const confidence = Math.min(1, Math.max(0, Number(parsed.confidence) || 0));
-      const leadScore = intent === "Lead"
-        ? Math.min(1, Math.max(0, Number(parsed.leadScore) || 0))
-        : 0;
+      
+      // Calculate leadScore (only for Lead intent)
+      let leadScore = 0;
+      if (intent === "Lead") {
+        leadScore = Math.min(1, Math.max(0, Number(parsed.leadScore) || 0));
+      }
+
+      // Determine lead quality from score
+      const leadQuality = intent === "Lead" ? getLeadQuality(leadScore) : "none";
 
       const factors = Array.isArray(parsed.factors)
-        ? parsed.factors.slice(0, 3).map(String)
+        ? parsed.factors.slice(0, 5).map(String)
         : [];
 
       // Validate and normalize follow-up
@@ -220,12 +290,13 @@ export async function analyzeConversationIntent(messages) {
         followUp.suggestedAction = null;
       }
 
-      console.log(`[Gemini] Intent: ${intent} (${confidence.toFixed(2)}) | FollowUp: ${followUp.needed ? followUp.priority : 'not needed'}`);
+      console.log(`[Gemini] Intent: ${intent} (${confidence.toFixed(2)}) | LeadScore: ${leadScore.toFixed(2)} (${leadQuality}) | FollowUp: ${followUp.needed ? followUp.priority : 'not needed'}`);
 
       return {
         intent,
         confidence: Number(confidence.toFixed(3)),
         leadScore: Number(leadScore.toFixed(3)),
+        leadQuality,
         factors,
         followUp,
         error: false,
@@ -259,6 +330,7 @@ export async function analyzeConversationIntent(messages) {
         intent: "General",
         confidence: 0,
         leadScore: 0,
+        leadQuality: "none",
         factors: ["Analysis failed"],
         followUp: {
           needed: false,
@@ -276,6 +348,7 @@ export async function analyzeConversationIntent(messages) {
     intent: "General",
     confidence: 0,
     leadScore: 0,
+    leadQuality: "none",
     factors: ["Max retries exceeded"],
     followUp: {
       needed: false,

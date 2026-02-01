@@ -111,6 +111,7 @@ export async function detectLeadRealtime({
           geminiIntent: geminiResult.intent,
           geminiConfidence: geminiResult.confidence,
           geminiLeadScore: geminiResult.leadScore,
+          geminiLeadQuality: geminiResult.leadQuality, // 🔥 NEW: Store quality label
         },
       }
     );
@@ -151,10 +152,15 @@ export async function detectLeadRealtime({
         if (geminiResult.intent === "Lead") {
           conversation.conversationLeadSeriousness = geminiResult.leadScore;
           conversation.conversationLeadSeriousnessUpdatedAt = now;
+          conversation.conversationLeadQuality = geminiResult.leadQuality; // 🔥 NEW
           conversation.leadFactors = geminiResult.factors;
+        } else {
+          // Clear lead fields if not a lead
+          conversation.conversationLeadSeriousness = 0;
+          conversation.conversationLeadQuality = "none";
+          conversation.leadFactors = [];
         }
 
-        conversation.conversationIntent = geminiResult.intent;
         conversation.labelSource = "ai";
       }
 
@@ -195,6 +201,7 @@ export async function detectLeadRealtime({
           label: conversation.conversationIntent,
           labelIntentConfidence: geminiResult.confidence,
           labelLeadSeriousness: geminiResult.leadScore || 0,
+          labelLeadQuality: geminiResult.leadQuality || "none", // 🔥 NEW
           factors: geminiResult.factors || [],
           
           // Follow-up fields
@@ -204,7 +211,7 @@ export async function detectLeadRealtime({
       // 🔥 NO await - fire and forget, don't block
 
       console.log(
-        `[LeadDetect] ✅ ${isNewConversation ? "[NEW] " : ""}Intent: ${previousIntent} → ${geminiResult.intent} | FollowUp: ${geminiResult.followUp.needed ? geminiResult.followUp.priority : "not needed"}`
+        `[LeadDetect] ✅ ${isNewConversation ? "[NEW] " : ""}Intent: ${previousIntent} → ${geminiResult.intent} | LeadScore: ${geminiResult.leadScore?.toFixed(2)} (${geminiResult.leadQuality}) | FollowUp: ${geminiResult.followUp.needed ? geminiResult.followUp.priority : "not needed"}`
       );
     } else {
       console.log(
@@ -221,6 +228,7 @@ export async function detectLeadRealtime({
       intentChanged: shouldUpdateIntent,
       confidence: geminiResult.confidence,
       leadScore: geminiResult.leadScore,
+      leadQuality: geminiResult.leadQuality, // 🔥 NEW
       factors: geminiResult.factors,
       followUp: geminiResult.followUp,
       followUpChanged,
