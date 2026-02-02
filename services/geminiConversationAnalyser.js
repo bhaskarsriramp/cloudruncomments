@@ -24,7 +24,7 @@ const SYSTEM_PROMPT = `
 You analyze Instagram DM conversations for fitness creators to:
 1. Identify potential leads/customers  
 2. Accurately score lead SERIOUSNESS (not just interest)
-3. Detect if the creator needs to follow up
+3. Detect if the creator needs to FOLLOW UP (respond to avoid missing a lead)
 
 You will receive ALL messages including greetings, short replies, and nudges. Analyze the FULL conversation context.
 
@@ -88,42 +88,65 @@ This is NOT just about showing interest - it's about purchase readiness.
 ❌ "How much?" = 0.4 (price shopping)
 ✅ "I'm 85kg, want to reach 60kg in 6 months. What's your 1:1 coaching fee?" = 0.8 (specific goal + timeline + service)
 
-## PART 3: FOLLOW-UP DETECTION (VERY IMPORTANT)
+## PART 3: FOLLOW-UP DETECTION (⚠️ CRITICAL - READ VERY CAREFULLY)
 
-Analyze if the creator needs to follow up with this user.
+"Follow-up" in this platform means: **Creator needs to respond to avoid missing a potential lead.**
 
-### FOLLOW-UP IS NEEDED WHEN:
+The goal is to help creators NOT MISS conversations that need their attention.
 
-1. **User Nudge Detected** (HIGHEST PRIORITY)
-   - User sent "?", "??", "???", "hello?", "are you there?"
-   - User sent repeated messages without creator response
-   - User is clearly waiting → followUp.needed = TRUE, priority = "high"
+### ⚠️ PREREQUISITE FOR FOLLOW-UP:
+**Creator must have sent AT LEAST ONE message in the conversation.**
+- If Creator has NEVER replied → followUp.needed = FALSE (it's just a new message, not a follow-up)
+- If Creator HAS replied before → Evaluate if they need to follow up
 
-2. **Unanswered Question**
-   - User asked a question that creator hasn't answered
-   - Last message from user is a question
+### FOLLOW-UP IS NEEDED (followUp.needed = TRUE) WHEN:
 
-3. **Stalled Conversation**
-   - Creator replied but user went silent (>24h)
-   - User showed interest but conversation stopped
-   - User said "will think about it" / "let me check" / "later"
+**Prerequisite: Creator has replied at least once in this conversation**
 
-4. **Pricing Discussion Without Closure**
-   - Pricing was discussed but no commitment
-   - User asked about cost but didn't proceed
+Then, if ANY of the following:
 
-### FOLLOW-UP IS NOT NEEDED WHEN:
+1. **Last message is from User** (Creator might miss replying!)
+   - User asked a question → Creator should respond
+   - User sent any message → Creator should acknowledge
+   - User is waiting for response → High priority
+   - User sent "??" or "hello?" → Very high priority (user is actively waiting)
 
-- User clearly said no/not interested ("not now", "maybe later", "no thanks")
-- User already enrolled/converted
-- Creator just sent a message (waiting for user's response)
-- Conversation naturally concluded
+2. **Last message is from Creator, but conversation stalled**
+   - Creator replied, user showed interest but went silent
+   - User said "let me think" / "will check" → Creator should follow up later
+   - Hot lead (leadScore > 0.6) went cold → Re-engage
 
-### PRIORITY LEVELS:
+### FOLLOW-UP IS NOT NEEDED (followUp.needed = FALSE) WHEN:
 
-- **high**: User is actively waiting (sent "??", "hello?"), OR hot lead gone cold (leadScore > 0.6)
-- **medium**: Moderate interest (leadScore 0.4-0.6), general inquiry unanswered
-- **low**: Mild interest (leadScore < 0.4), casual conversation stalled
+1. **Creator has NEVER replied** 
+   - Only user messages exist
+   - This is just a new/pending message, NOT a follow-up situation
+
+2. **User explicitly declined**
+   - "Not interested", "No thanks", "Maybe later", "Not now"
+   - No point in following up
+
+3. **User already converted/enrolled**
+
+4. **Conversation naturally concluded**
+   - User said "Thanks!", "Got it!", etc. with no pending question
+
+### PRIORITY LEVELS (only when followUp.needed = TRUE):
+
+- **high**: 
+  - User is actively waiting ("??", "hello?", repeated messages)
+  - Hot lead (leadScore > 0.6) asked a question
+  - User asked about pricing/enrollment
+  
+- **medium**: 
+  - User asked a general question
+  - Moderate interest (leadScore 0.4-0.6)
+  - User sent a message that needs acknowledgment
+  
+- **low**: 
+  - Casual conversation
+  - User sent something but low lead potential
+  - Creator replied, user went silent (re-engage attempt)
 
 ## RESPONSE FORMAT
 
@@ -137,21 +160,20 @@ Respond ONLY with valid JSON (no markdown, no backticks):
   "followUp": {
     "needed": true|false,
     "priority": "high|medium|low|null",
-    "reason": "Brief explanation of why follow-up is needed or not",
-    "suggestedAction": "Specific suggestion for what creator should do (only if needed)",
-    "isUserWaiting": true|false
+    "reason": "Brief explanation",
+    "suggestedAction": "What creator should do (only if needed)"
   }
 }
 
 ## RULES
 - Analyze the FULL conversation, not just the last message
 - If user previously showed lead intent, maintain that context
-- User nudges ("??", "hello?") should ALWAYS trigger followUp.needed = true with priority = "high"
 - Be STRICT with leadScore - most inquiries are 0.2-0.5, not 0.6+
 - Only give leadScore > 0.6 if user shares SPECIFIC goals or asks HOW TO JOIN
 - Set leadQuality based on score: none(0-0.2), low(0.2-0.4), medium(0.4-0.6), high(0.6-0.8), hot(0.8-1.0)
+- ⚠️ CRITICAL: followUp.needed can ONLY be true if Creator has sent at least one message
+- If Creator has replied AND last message is from User → Usually followUp.needed = true (unless user declined)
 - If followUp.needed is false, set priority to null and suggestedAction to null
-- isUserWaiting should be true if the latest message suggests user is waiting for response
 `;
 
 /**
@@ -160,7 +182,6 @@ Respond ONLY with valid JSON (no markdown, no backticks):
 function extractJson(text) {
   if (!text || typeof text !== "string") return null;
 
-  // Try direct JSON match
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (jsonMatch) {
     try {
@@ -170,7 +191,6 @@ function extractJson(text) {
     }
   }
 
-  // Try markdown code block
   const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (codeBlockMatch) {
     try {
@@ -197,9 +217,10 @@ function getLeadQuality(score) {
 /**
  * Analyze conversation for intent AND follow-up status
  * @param {Array<{ sender: string, text: string, createdAtPlatform: Date }>} messages
+ * @param {boolean} creatorHasReplied - Whether creator has sent at least one message
  * @returns {Promise<{ intent, confidence, leadScore, leadQuality, factors, followUp }>}
  */
-export async function analyzeConversationIntent(messages) {
+export async function analyzeConversationIntent(messages, creatorHasReplied = false) {
   if (!messages || messages.length === 0) {
     return {
       intent: "General",
@@ -212,19 +233,24 @@ export async function analyzeConversationIntent(messages) {
         priority: null,
         reason: "No messages",
         suggestedAction: null,
-        isUserWaiting: false,
       },
     };
   }
 
-  // Build conversation context with timestamps for better follow-up detection
+  // 🔥 Check if creator has replied (from messages array as backup)
+  const hasCreatorMessage = creatorHasReplied || messages.some(m => m.sender === "me");
+  
+  // Determine last message sender
+  const lastMessage = messages[messages.length - 1];
+  const lastMessageFromUser = lastMessage?.sender !== "me";
+  
+  // Build conversation context
   const now = new Date();
   const conversationText = messages
     .map((m) => {
       const sender = m.sender === "me" ? "Creator" : "User";
       const text = (m.text || "[empty]").replace(/[\r\n]+/g, " ").trim().substring(0, 200);
       
-      // Calculate time ago for context
       let timeAgo = "";
       if (m.createdAtPlatform) {
         const msgDate = new Date(m.createdAtPlatform);
@@ -244,27 +270,15 @@ export async function analyzeConversationIntent(messages) {
     })
     .join("\n");
 
-  // Add context about last message and conversation state
-  const lastMessage = messages[messages.length - 1];
-  const lastSender = lastMessage?.sender === "me" ? "Creator" : "User";
-  
-  // Count consecutive user messages at end (indicates waiting)
-  let consecutiveUserMessages = 0;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].sender !== "me") {
-      consecutiveUserMessages++;
-    } else {
-      break;
-    }
-  }
-  
+  // 🔥 Add critical context about creator participation and last message
   const contextNote = `
 
 [Conversation State]
-- Last message from: ${lastSender}
 - Total messages: ${messages.length}
-- Consecutive user messages at end: ${consecutiveUserMessages}
-- User waiting for response: ${consecutiveUserMessages > 0 ? "YES" : "NO"}`;
+- Creator has replied in this conversation: ${hasCreatorMessage ? "YES" : "NO"}
+- Last message from: ${lastMessageFromUser ? "User" : "Creator"}
+- Follow-up eligible: ${hasCreatorMessage ? "YES (creator has engaged)" : "NO (creator hasn't replied yet - this is just a new message)"}
+${hasCreatorMessage && lastMessageFromUser ? "- ⚠️ User is waiting for creator's response!" : ""}`;
 
   const fullPrompt = `${SYSTEM_PROMPT}\n\nConversation (${messages.length} messages):\n${conversationText}${contextNote}`;
 
@@ -297,39 +311,48 @@ export async function analyzeConversationIntent(messages) {
 
       const confidence = Math.min(1, Math.max(0, Number(parsed.confidence) || 0));
       
-      // Calculate leadScore (only for Lead intent)
       let leadScore = 0;
       if (intent === "Lead") {
         leadScore = Math.min(1, Math.max(0, Number(parsed.leadScore) || 0));
       }
 
-      // Determine lead quality from score
       const leadQuality = intent === "Lead" ? getLeadQuality(leadScore) : "none";
 
       const factors = Array.isArray(parsed.factors)
         ? parsed.factors.slice(0, 5).map(String)
         : [];
 
-      // Validate and normalize follow-up
-      const followUp = {
-        needed: Boolean(parsed.followUp?.needed),
-        priority: ["high", "medium", "low"].includes(parsed.followUp?.priority)
-          ? parsed.followUp.priority
-          : null,
-        reason: parsed.followUp?.reason ? String(parsed.followUp.reason).substring(0, 200) : null,
-        suggestedAction: parsed.followUp?.suggestedAction 
-          ? String(parsed.followUp.suggestedAction).substring(0, 300) 
-          : null,
-        isUserWaiting: Boolean(parsed.followUp?.isUserWaiting),
-      };
-
-      // If not needed, clear other fields
-      if (!followUp.needed) {
-        followUp.priority = null;
-        followUp.suggestedAction = null;
+      // 🔥 CRITICAL: Determine follow-up based on creator participation
+      let followUpNeeded = Boolean(parsed.followUp?.needed);
+      let followUpReason = parsed.followUp?.reason ? String(parsed.followUp.reason).substring(0, 200) : null;
+      
+      // RULE 1: If creator has never replied, follow-up is NOT applicable
+      if (!hasCreatorMessage) {
+        followUpNeeded = false;
+        followUpReason = "Creator hasn't replied yet - this is a new message, not a follow-up situation";
+        console.log(`[Gemini] 🚫 Follow-up disabled: Creator hasn't replied yet`);
+      }
+      
+      // RULE 2: If creator has replied AND last message is from user, likely needs follow-up
+      // (unless user declined - Gemini should catch that)
+      if (hasCreatorMessage && lastMessageFromUser && !followUpNeeded) {
+        // Gemini said no follow-up needed, but let's check if it makes sense
+        // Trust Gemini's judgment here (user might have said "no thanks")
+        console.log(`[Gemini] ℹ️ Creator replied, last msg from user, but Gemini says no follow-up: ${followUpReason}`);
       }
 
-      console.log(`[Gemini] Intent: ${intent} (${confidence.toFixed(2)}) | LeadScore: ${leadScore.toFixed(2)} (${leadQuality}) | FollowUp: ${followUp.needed ? followUp.priority : 'not needed'} | UserWaiting: ${followUp.isUserWaiting}`);
+      const followUp = {
+        needed: followUpNeeded,
+        priority: followUpNeeded && ["high", "medium", "low"].includes(parsed.followUp?.priority)
+          ? parsed.followUp.priority
+          : null,
+        reason: followUpReason,
+        suggestedAction: followUpNeeded && parsed.followUp?.suggestedAction 
+          ? String(parsed.followUp.suggestedAction).substring(0, 300) 
+          : null,
+      };
+
+      console.log(`[Gemini] Intent: ${intent} (${confidence.toFixed(2)}) | LeadScore: ${leadScore.toFixed(2)} (${leadQuality}) | CreatorReplied: ${hasCreatorMessage} | LastMsgFromUser: ${lastMessageFromUser} | FollowUp: ${followUp.needed ? followUp.priority : 'not needed'}`);
 
       return {
         intent,
@@ -338,6 +361,8 @@ export async function analyzeConversationIntent(messages) {
         leadQuality,
         factors,
         followUp,
+        creatorHasReplied: hasCreatorMessage,
+        lastMessageFromUser,
         error: false,
       };
 
@@ -376,14 +401,14 @@ export async function analyzeConversationIntent(messages) {
           priority: null,
           reason: "Analysis failed",
           suggestedAction: null,
-          isUserWaiting: false,
         },
+        creatorHasReplied: hasCreatorMessage,
+        lastMessageFromUser,
         error: true,
       };
     }
   }
 
-  // Should never reach here
   return {
     intent: "General",
     confidence: 0,
@@ -395,8 +420,9 @@ export async function analyzeConversationIntent(messages) {
       priority: null,
       reason: "Max retries exceeded",
       suggestedAction: null,
-      isUserWaiting: false,
     },
+    creatorHasReplied: hasCreatorMessage,
+    lastMessageFromUser,
     error: true,
   };
 }
