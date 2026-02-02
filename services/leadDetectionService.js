@@ -236,6 +236,7 @@ export async function detectLeadRealtime({
 
       // ─────────────────────────────────────────────
       // STEP 5: Publish to UI (Fire-and-forget - NO await)
+      // 🔥 FIXED: Include lastParticipantMessageAt so frontend can compute canReply
       // ─────────────────────────────────────────────
       publishConversationUpdate({
         creatorId: creatorId.toString(),
@@ -250,6 +251,10 @@ export async function detectLeadRealtime({
           
           // Follow-up fields
           followUpStatus: conversation.followUpStatus,
+          
+          // 🔥 CRITICAL: Include lastParticipantMessageAt so frontend can compute canReply
+          // Without this, the TextField gets disabled after label updates
+          lastParticipantMessageAt: conversation.lastParticipantMessageAt,
         },
       });
 
