@@ -943,6 +943,8 @@ if (existingCheck) {
   try {
     const { conversation, message } = conversationData;
 
+    console.log('conversation ::::::::::::::: ', conversation);
+
     await publishInboxMessageHTTP({
       creatorId: creator._id.toString(),
       conversationId: conversation._id.toString(),
