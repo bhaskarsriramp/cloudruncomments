@@ -81,7 +81,10 @@ export async function persistInboxMessage({
   const existing = await Message.findOne({ igMessageId }).lean();
   if (existing) {
     console.log("ℹ️ Message already exists:", igMessageId);
-    return { conversation, message: existing };
+    
+    // 🔥 FIX: Even if message exists, ensure we return the latest conversation state
+    const freshConversation = await Conversation.findById(conversation._id).lean();
+    return { conversation: freshConversation, message: existing };
   }
 
   const message = await Message.create({
@@ -108,55 +111,55 @@ export async function persistInboxMessage({
   console.log("✅ Message created:", message._id);
 
   // =========================================================
-  // 6️⃣ Update conversation snapshot (GUARDED)
-  // Only update if this message is newer than lastActivityAt
+  // 6️⃣ Update conversation snapshot
+  // 🔥 FIXED: Always update if sender is "them" to ensure lastParticipantMessageAt is set
   // =========================================================
-  const update = {
+  const updateFields = {
     lastMessage: {
       text: text || (type === "image" ? "Sent an image" : type === "video" ? "Sent a video" : "Sent a message"),
       type,
       sender,
       timestamp: createdAt,
     },
-    lastActivityAt: createdAt,
     lastSyncedAt: new Date(),
   };
 
-  // 🔥 CRITICAL: Only update lastParticipantMessageAt if sender is "them"
-  if (sender === "them") {
-    update.lastParticipantMessageAt = createdAt;
-  }
-
   // Build update operation
   const updateOperation = {
-    $set: update,
+    $set: updateFields,
   };
 
-  // Increment unread count only if message is from participant
+  // 🔥 CRITICAL: Always update lastParticipantMessageAt if sender is "them"
+  // Use $max to ensure we only set if newer
   if (sender === "them") {
+    updateOperation.$max = {
+      lastParticipantMessageAt: createdAt,
+      lastActivityAt: createdAt,
+    };
     updateOperation.$inc = { unreadCount: 1 };
+  } else {
+    // For creator messages, just update lastActivityAt if newer
+    updateOperation.$max = {
+      lastActivityAt: createdAt,
+    };
   }
 
-  // Update conversation only if this message is newer (or if lastActivityAt doesn't exist)
-  const updatedConversation = await Conversation.findOneAndUpdate(
-    {
-      _id: conversation._id,
-      $or: [
-        { lastActivityAt: { $exists: false } },
-        { lastActivityAt: { $lt: createdAt } },
-      ],
-    },
+  // 🔥 FIXED: Use simpler update without complex conditions
+  // $max ensures we only update if the new value is greater
+  const updatedConversation = await Conversation.findByIdAndUpdate(
+    conversation._id,
     updateOperation,
     { new: true }
   );
 
-  // If update didn't match (message was older), return original conversation
   const finalConversation = updatedConversation || conversation;
 
   console.log("✅ Conversation updated:", {
     id: finalConversation._id,
     unreadCount: finalConversation.unreadCount,
     lastActivityAt: finalConversation.lastActivityAt,
+    lastParticipantMessageAt: finalConversation.lastParticipantMessageAt,
+    sender: sender,
   });
 
   return {

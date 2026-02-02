@@ -8,9 +8,57 @@ import { publishConversationCreated } from "./realtimePublisher.js";
 
 const GRAPH_API_BASE = "https://graph.facebook.com/v24.0";
 
+// 🔥 In-memory lock to prevent concurrent conversation creation for same participant
+const conversationCreationLocks = new Map();
+
+/**
+ * Acquire a lock for conversation creation
+ * Returns a release function if lock acquired, null if already locked
+ */
+function acquireConversationLock(key) {
+  if (conversationCreationLocks.has(key)) {
+    console.log(`🔒 Lock already held for: ${key}`);
+    return null;
+  }
+  
+  conversationCreationLocks.set(key, Date.now());
+  console.log(`🔓 Lock acquired for: ${key}`);
+  
+  // Auto-release after 30 seconds (safety net)
+  const timeout = setTimeout(() => {
+    conversationCreationLocks.delete(key);
+    console.log(`🔓 Lock auto-released for: ${key}`);
+  }, 30000);
+  
+  return () => {
+    clearTimeout(timeout);
+    conversationCreationLocks.delete(key);
+    console.log(`🔓 Lock released for: ${key}`);
+  };
+}
+
+/**
+ * Wait for lock to be released (with timeout)
+ */
+async function waitForLock(key, maxWaitMs = 10000) {
+  const startTime = Date.now();
+  
+  while (conversationCreationLocks.has(key)) {
+    if (Date.now() - startTime > maxWaitMs) {
+      console.log(`⏰ Lock wait timeout for: ${key}`);
+      return false;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  
+  return true;
+}
+
 /**
  * Find or create a conversation when we only know the participant's IG User ID
  * This happens when a message arrives for a conversation not yet in our DB
+ * 
+ * 🔥 INCLUDES LOCK MECHANISM to prevent duplicate conversations
  */
 export async function findOrCreateConversationByParticipant({
   creatorId,
@@ -19,6 +67,9 @@ export async function findOrCreateConversationByParticipant({
   pageAccessToken,
   fbPageId,
 }) {
+  // 🔥 Create unique lock key for this creator + participant combination
+  const lockKey = `conv:${creatorId}:${participantIgUserId}`;
+  
   try {
     console.log("🔍 Searching for conversation with participant:", participantIgUserId);
 
@@ -44,135 +95,204 @@ export async function findOrCreateConversationByParticipant({
       };
     }
 
-    // STEP 2: No conversation exists - need to fetch from Meta and create
-
-    // STEP 2a: Find the Meta conversation ID (needed for fetching messages)
-    console.log("📡 Finding conversation in Meta API...");
-    const metaConversationId = await findConversationIdFromMeta({
-      businessIgUserId,
-      participantIgUserId,
-      pageAccessToken,
-      fbPageId,
-    });
-
-    if (!metaConversationId) {
-      throw new Error("Could not find conversation ID from Meta");
+    // 🔥 STEP 1.5: Try to acquire lock before creating new conversation
+    const releaseLock = acquireConversationLock(lockKey);
+    
+    if (!releaseLock) {
+      // Lock is held by another request - wait for it
+      console.log("⏳ Waiting for another request to finish creating conversation...");
+      const lockReleased = await waitForLock(lockKey, 15000);
+      
+      if (lockReleased) {
+        // Lock released - check if conversation was created by other request
+        conversation = await Conversation.findOne({
+          creatorId: creatorId,
+          platform: "instagram",
+          igConversationId: igConversationId,
+        });
+        
+        if (conversation) {
+          console.log("✅ Conversation was created by concurrent request:", conversation._id);
+          const participant = await Participant.findById(conversation.participantId);
+          return {
+            conversation: conversation,
+            participant: participant,
+            isNew: false,
+          };
+        }
+      }
+      
+      // If still no conversation and lock timed out, throw error
+      throw new Error("Concurrent conversation creation conflict - please retry");
     }
 
-    console.log("✅ Found Meta conversation ID:", metaConversationId);
-
-    // STEP 3: Fetch participant profile from Meta
-    console.log("👤 Fetching participant profile...");
-    const profileData = await instagramService.fetchUserProfile({
-      igUserId: participantIgUserId,
-      accessToken: pageAccessToken,
-    });
-
-    // STEP 4: Create or update participant
-    const participant = await Participant.findOneAndUpdate(
-      { platform: "instagram", igUserId: participantIgUserId },
-      {
-        $set: {
-          username: profileData?.username || null,
-          name: profileData?.name || null,
-          profilePic: profileData?.profile_pic_url || null,
-          lastSeenAt: new Date(),
-        },
-      },
-      { upsert: true, new: true }
-    );
-
-    console.log("✅ Participant created/updated:", participant._id);
-
-    // STEP 5: Fetch last 25 messages from Meta using the Meta conversation ID
-    console.log("📥 Fetching last 25 messages...");
-    const { messages: fetchedMessages, paging } =
-      await instagramService.fetchLatestMessages({
-        igConversationId: metaConversationId, // ✅ Use Meta ID for API calls
-        accessToken: pageAccessToken,
-        limit: 25,
+    try {
+      // 🔥 STEP 1.6: Double-check after acquiring lock (another request might have created it)
+      conversation = await Conversation.findOne({
+        creatorId: creatorId,
+        platform: "instagram",
+        igConversationId: igConversationId,
       });
 
-    console.log(`✅ Fetched ${fetchedMessages.length} messages`);
+      if (conversation) {
+        console.log("✅ Conversation was created while waiting for lock:", conversation._id);
+        const participant = await Participant.findById(conversation.participantId);
+        return {
+          conversation: conversation,
+          participant: participant,
+          isNew: false,
+        };
+      }
 
-    // STEP 6: Create conversation record with standardized ID
-    const lastMessage = buildLastMessageSnapshot(
-      fetchedMessages[0],
-      businessIgUserId
-    );
+      // STEP 2: No conversation exists - need to fetch from Meta and create
 
-// 🔥 NEW: Calculate unread count and lastParticipantMessageAt
-let unreadCount = 0;
-let lastParticipantMessageAt = null;
+      // STEP 2a: Find the Meta conversation ID (needed for fetching messages)
+      console.log("📡 Finding conversation in Meta API...");
+      const metaConversationId = await findConversationIdFromMeta({
+        businessIgUserId,
+        participantIgUserId,
+        pageAccessToken,
+        fbPageId,
+      });
 
-for (const msg of fetchedMessages) {
-  const isFromBusiness = msg.from?.id === businessIgUserId;
-  
-  if (!isFromBusiness) {
-    unreadCount++;
-    
-    // Track most recent message from participant
-    const msgTime = new Date(msg.created_time);
-    if (!lastParticipantMessageAt || msgTime > lastParticipantMessageAt) {
-      lastParticipantMessageAt = msgTime;
+      if (!metaConversationId) {
+        throw new Error("Could not find conversation ID from Meta");
+      }
+
+      console.log("✅ Found Meta conversation ID:", metaConversationId);
+
+      // STEP 3: Fetch participant profile from Meta
+      console.log("👤 Fetching participant profile...");
+      const profileData = await instagramService.fetchUserProfile({
+        igUserId: participantIgUserId,
+        accessToken: pageAccessToken,
+      });
+
+      // STEP 4: Create or update participant
+      const participant = await Participant.findOneAndUpdate(
+        { platform: "instagram", igUserId: participantIgUserId },
+        {
+          $set: {
+            username: profileData?.username || null,
+            name: profileData?.name || null,
+            profilePic: profileData?.profile_pic_url || null,
+            lastSeenAt: new Date(),
+          },
+        },
+        { upsert: true, new: true }
+      );
+
+      console.log("✅ Participant created/updated:", participant._id);
+
+      // STEP 5: Fetch last 25 messages from Meta using the Meta conversation ID
+      console.log("📥 Fetching last 25 messages...");
+      const { messages: fetchedMessages, paging } =
+        await instagramService.fetchLatestMessages({
+          igConversationId: metaConversationId, // ✅ Use Meta ID for API calls
+          accessToken: pageAccessToken,
+          limit: 25,
+        });
+
+      console.log(`✅ Fetched ${fetchedMessages.length} messages`);
+
+      // STEP 6: Create conversation record with standardized ID
+      const lastMessage = buildLastMessageSnapshot(
+        fetchedMessages[0],
+        businessIgUserId
+      );
+
+      // 🔥 Calculate unread count and lastParticipantMessageAt
+      let unreadCount = 0;
+      let lastParticipantMessageAt = null;
+
+      for (const msg of fetchedMessages) {
+        const isFromBusiness = msg.from?.id === businessIgUserId;
+        
+        if (!isFromBusiness) {
+          unreadCount++;
+          
+          // Track most recent message from participant
+          const msgTime = new Date(msg.created_time);
+          if (!lastParticipantMessageAt || msgTime > lastParticipantMessageAt) {
+            lastParticipantMessageAt = msgTime;
+          }
+        }
+      }
+
+      // 🔥 ATOMIC CREATION: Use findOneAndUpdate with upsert to prevent duplicates
+      conversation = await Conversation.findOneAndUpdate(
+        {
+          // Match criteria - prevents duplicates
+          creatorId: creatorId,
+          platform: "instagram",
+          igConversationId: igConversationId,
+        },
+        {
+          $setOnInsert: {
+            platform: "instagram",
+            igConversationId: igConversationId,     // igdm:17841402138259768:2226812364460274
+            metaThreadId: metaConversationId,       // aWdfZAG06MTpJR01lc3NhZA2VU...
+            creatorId: creatorId,
+            participantId: participant._id,
+            lastMessage: lastMessage,
+            lastActivityAt: new Date(fetchedMessages[0]?.created_time || Date.now()),
+            lastSyncedAt: new Date(),
+            lastMetaCursor: paging?.cursors?.after || null,
+            unreadCount: unreadCount,
+            lastParticipantMessageAt: lastParticipantMessageAt,
+            label: "General",
+            labelSource: "auto",
+          }
+        },
+        {
+          upsert: true,
+          new: true,
+          setDefaultsOnInsert: true,
+        }
+      );
+
+      console.log("✅ Conversation created/found:", conversation._id);
+      await conversation.populate('participantId');
+
+      // STEP 7: Save all fetched messages
+      console.log("💾 Saving messages to database...");
+      const savedMessages = await saveMessagesToDatabase({
+        messages: fetchedMessages,
+        conversationId: conversation._id,
+        participantId: participant._id,
+        creatorId: creatorId,
+        businessIgUserId: businessIgUserId,
+      });
+
+      console.log(`✅ Saved ${savedMessages.length} messages`);
+
+      // 🔥 Publish to Redis so frontend gets the new conversation
+      await publishConversationCreated({
+        creatorId: creatorId,
+        conversation: {
+          ...conversation.toObject(),
+          participant: participant.toObject ? participant.toObject() : participant,
+          canReply: lastParticipantMessageAt 
+            ? (Date.now() - new Date(lastParticipantMessageAt).getTime() <= 24 * 60 * 60 * 1000)
+            : false,
+          unreadCount: conversation.unreadCount,
+        },
+      });
+
+      console.log("✅ Published new conversation to Redis");
+
+      return {
+        conversation,
+        participant,
+        messages: savedMessages,
+        isNew: true,
+      };
+      
+    } finally {
+      // 🔥 Always release the lock
+      releaseLock();
     }
-  }
-}
-
-    // ✅ Use standardized igConversationId format for DB lookups
-    // ✅ Store Meta's conversation ID in metaThreadId for API calls
-    conversation = await Conversation.create({
-      platform: "instagram",
-      igConversationId: igConversationId,     // igdm:17841402138259768:2226812364460274
-      metaThreadId: metaConversationId,       // aWdfZAG06MTpJR01lc3NhZA2VU...
-      creatorId: creatorId,
-      participantId: participant._id,
-      lastMessage: lastMessage,
-      lastActivityAt: new Date(fetchedMessages[0]?.created_time || Date.now()),
-      lastSyncedAt: new Date(),
-      lastMetaCursor: paging?.cursors?.after || null,
-      unreadCount: unreadCount,
-      lastParticipantMessageAt: lastParticipantMessageAt,
-      label: "General",
-      labelSource: "auto",
-    });
-
-    console.log("✅ Conversation created:", conversation._id);
-    await conversation.populate('participantId');
-
-    // STEP 7: Save all fetched messages
-    console.log("💾 Saving messages to database...");
-    const savedMessages = await saveMessagesToDatabase({
-      messages: fetchedMessages,
-      conversationId: conversation._id,
-      participantId: participant._id,
-      creatorId: creatorId,
-      businessIgUserId: businessIgUserId,
-    });
-
-    console.log(`✅ Saved ${savedMessages.length} messages`);
-
-     // 🔥 NEW: Publish to Redis so frontend gets the new conversation
-await publishConversationCreated({
-  creatorId: creatorId,
-  conversation: {
-    ...conversation.toObject(),
-    participant: participant.toObject ? participant.toObject() : participant,
-    canReply: lastParticipantMessageAt 
-      ? (Date.now() - new Date(lastParticipantMessageAt).getTime() <= 24 * 60 * 60 * 1000)
-      : false,
-    unreadCount: conversation.unreadCount, // ✅ Make sure this is included
-  },
-});
-
-    console.log("✅ Published new conversation to Redis");
-
-    return {
-      conversation,
-      participant,
-      messages: savedMessages,
-      isNew: true,
-    };
+    
   } catch (error) {
     console.error("❌ findOrCreateConversationByParticipant failed:", error.message);
     throw error;

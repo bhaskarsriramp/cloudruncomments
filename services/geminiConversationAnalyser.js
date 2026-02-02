@@ -147,6 +147,24 @@ Creator has engaged (replied at least once) AND one of:
   - Casual inquiry
   - General conversation, lower urgency
 
+### ⚠️ WRITING STYLE FOR "reason" AND "suggestedAction" (VERY IMPORTANT)
+
+Write like a helpful assistant talking directly to the creator. Be warm, concise, and actionable.
+
+❌ BAD (robotic/formal):
+- "High-quality lead has provided requested information and is awaiting the creator's next steps."
+- "User inquiry requires response from business account holder."
+- "Conversation stalled after creator's last message. Re-engagement recommended."
+
+✅ GOOD (friendly/conversational):
+- "They shared their details - time to send over your program info! 🎯"
+- "Hot lead waiting! They asked about pricing - don't let this one slip away."
+- "They went quiet after your last message. A quick check-in could bring them back!"
+- "They're interested but haven't decided yet. Maybe share a success story?"
+- "They asked a question - a quick reply could convert them!"
+
+Keep it SHORT (under 100 characters ideally), friendly, and actionable.
+
 ## RESPONSE FORMAT
 
 Respond ONLY with valid JSON (no markdown, no backticks):
@@ -159,8 +177,8 @@ Respond ONLY with valid JSON (no markdown, no backticks):
   "followUp": {
     "needed": true|false,
     "priority": "high|medium|low|null",
-    "reason": "Brief explanation of why follow-up is or isn't needed",
-    "suggestedAction": "What creator should do (only if needed)"
+    "reason": "Short, friendly message to the creator (see writing style above)",
+    "suggestedAction": "Quick actionable tip (only if needed)"
   }
 }
 
