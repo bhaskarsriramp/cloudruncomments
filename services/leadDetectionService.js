@@ -13,10 +13,10 @@ const CONTEXT_MESSAGE_LIMIT = 15;
  * NO LOCAL FILTERING - Every message goes to Gemini for full context analysis
  * 
  * FOLLOW-UP LOGIC:
- * - Follow-up is only applicable if creator has replied at least once
- * - If creator has replied AND user sends a message → likely needs follow-up
- * - If creator has replied AND user went silent → might need follow-up to re-engage
- * - If creator has NEVER replied → NOT a follow-up (just a new message)
+ * - Follow-up is ONLY applicable if creator has replied at least once
+ * - If creator has replied AND last message is from user → followUp.needed = true
+ * - If creator has replied AND last message is from creator (user went silent) → followUp.needed = true (re-engage)
+ * - If creator has NEVER replied → followUp.needed = false (it's just a new message)
  */
 export async function detectLeadRealtime({
   conversationId,
@@ -106,13 +106,41 @@ export async function detectLeadRealtime({
       }
     }
 
-    console.log(`[LeadDetect] Analyzing ${contextMessages.length} messages | CreatorHasReplied: ${creatorHasReplied}`);
+    // Determine who sent the last message
+    const lastMessage = contextMessages[contextMessages.length - 1];
+    const lastSenderIsUser = lastMessage?.sender !== "me";
+
+    console.log(`[LeadDetect] Analyzing ${contextMessages.length} messages | CreatorHasReplied: ${creatorHasReplied} | LastMsgFromUser: ${lastSenderIsUser}`);
 
     // ─────────────────────────────────────────────
     // STEP 3: Gemini Analysis (Intent + Follow-up)
     // 🔥 Pass creatorHasReplied to Gemini
     // ─────────────────────────────────────────────
     const geminiResult = await analyzeConversationIntent(contextMessages, creatorHasReplied);
+
+    // 🔥 CRITICAL: If Gemini failed, DON'T downgrade existing lead data
+    if (geminiResult.error) {
+      console.log(`[LeadDetect] ⚠️ Gemini error - preserving existing conversation data`);
+      
+      // Mark message as failed but don't change conversation
+      await Message.updateOne(
+        { _id: messageId },
+        {
+          $set: {
+            aiProcess: "failed",
+            processedAt: new Date(),
+            aiProcessError: "Gemini analysis failed",
+          },
+        }
+      );
+      
+      return {
+        processed: false,
+        reason: "GEMINI_ERROR",
+        preservedExistingData: true,
+        executionMs: Date.now() - startTime,
+      };
+    }
 
     // Mark message as processed
     await Message.updateOne(
@@ -151,7 +179,8 @@ export async function detectLeadRealtime({
 
     // Check if follow-up status changed
     const previousFollowUpNeeded = conversation.followUpStatus?.needed || false;
-    const followUpChanged = previousFollowUpNeeded !== geminiResult.followUp.needed ||
+    const newFollowUpNeeded = geminiResult.followUp.needed;
+    const followUpChanged = previousFollowUpNeeded !== newFollowUpNeeded ||
       conversation.followUpStatus?.priority !== geminiResult.followUp.priority;
 
     // Update conversation if anything changed
@@ -179,8 +208,8 @@ export async function detectLeadRealtime({
       }
 
       // 🔥 Update follow-up status
-      // Follow-up is only valid if creator has engaged in the conversation
-      if (geminiResult.followUp.needed && creatorHasReplied) {
+      // The Gemini analyzer already handles the creatorHasReplied logic
+      if (newFollowUpNeeded) {
         conversation.followUpStatus = {
           needed: true,
           priority: geminiResult.followUp.priority,
@@ -191,13 +220,10 @@ export async function detectLeadRealtime({
           completedAt: null,
         };
       } else {
-        // Either follow-up not needed OR creator hasn't replied yet
         conversation.followUpStatus = {
           needed: false,
           priority: null,
-          reason: creatorHasReplied 
-            ? (geminiResult.followUp.reason || "No follow-up needed")
-            : "Creator hasn't replied yet - not a follow-up situation",
+          reason: geminiResult.followUp.reason || "No follow-up needed",
           suggestedAction: null,
           detectedAt: null,
           dismissedAt: null,
@@ -228,7 +254,7 @@ export async function detectLeadRealtime({
       });
 
       console.log(
-        `[LeadDetect] ✅ ${isNewConversation ? "[NEW] " : ""}Intent: ${previousIntent} → ${geminiResult.intent} | LeadScore: ${geminiResult.leadScore?.toFixed(2)} (${geminiResult.leadQuality}) | CreatorReplied: ${creatorHasReplied} | FollowUp: ${conversation.followUpStatus.needed ? conversation.followUpStatus.priority : "not needed"}`
+        `[LeadDetect] ✅ ${isNewConversation ? "[NEW] " : ""}Intent: ${previousIntent} → ${geminiResult.intent} | LeadScore: ${geminiResult.leadScore?.toFixed(2)} (${geminiResult.leadQuality}) | CreatorReplied: ${creatorHasReplied} | LastMsgFromUser: ${lastSenderIsUser} | FollowUp: ${conversation.followUpStatus.needed ? conversation.followUpStatus.priority : "not needed"}`
       );
     } else {
       console.log(
@@ -249,6 +275,7 @@ export async function detectLeadRealtime({
       followUp: geminiResult.followUp,
       followUpChanged,
       creatorHasReplied,
+      lastSenderIsUser,
       messagesAnalyzed: contextMessages.length,
       executionMs: Date.now() - startTime,
     };
