@@ -31,13 +31,13 @@ You will receive ALL messages including greetings, short replies, and nudges. An
 ## PART 1: INTENT CLASSIFICATION
 
 Classify the OVERALL conversation intent as ONE of:
-- General (casual chat, greetings, no buying intent)
+- General (casual chat, greetings, no buying intent, OR **lost/rejected leads**)
 - Lead (interested in fitness programs, coaching, pricing)
 - Business (collaboration, sponsorship, partnership)
 
-IMPORTANT: Intent should reflect the ENTIRE conversation, not just the latest message.
-- If user previously showed lead intent but latest message is "??" → Still a Lead
-- If conversation started with lead interest → Keep as Lead until clearly abandoned
+### ⚠️ CRITICAL INTENT RULES:
+1. **History Matters:** If user previously showed lead intent but latest message is "??" → Still a Lead.
+2. **The "Lost Lead" Exception:** If the user **EXPLICITLY DECLINES**, says "not interested", "too expensive", "no thanks", or ends the negotiation negatively → **Downgrade to GENERAL**. They are no longer a Lead.
 
 ## PART 2: LEAD SCORE (CRITICAL - READ CAREFULLY)
 
@@ -46,10 +46,11 @@ This is NOT just about showing interest - it's about purchase readiness.
 
 ### LEAD SCORE RUBRIC:
 
-**0.0-0.2 (Not a Lead / Noise)**
+**0.0-0.2 (Not a Lead / Noise / Rejected)**
 - Just greetings ("Hi", "Hello") with no follow-up
 - Random questions unrelated to services
 - Single word responses with no context
+- **User explicitly declined / not interested**
 
 **0.2-0.4 (Casual Inquiry - LOW quality lead)**
 - Generic questions like "What programs do you have?"
@@ -123,7 +124,7 @@ Creator has engaged (replied at least once) AND one of:
    - It's just a new/pending conversation, not a "follow-up"
 
 2. **User explicitly declined**
-   - "No thanks", "Not interested", "Maybe later", "Not now"
+   - "No thanks", "Not interested", "Maybe later", "Not now", "Too expensive"
    - User clearly said no → Don't chase
 
 3. **User already converted/enrolled**
@@ -160,7 +161,7 @@ Always refer to the person messaging as "User" (not "They" or "Them").
 ❌ BAD (using "They"):
 - "They shared their details - time to send over your program info!"
 - "They're waiting for the program details you promised!"
-- "They went quiet after your last message."
+- "They went quiet after your last message.
 
 ✅ GOOD (friendly + "User"):
 - "User shared their details - time to send over your program info! 🎯"
@@ -413,7 +414,7 @@ ${hasCreatorMessage && lastSenderIsUser ? "- ⚠️ User is waiting for Creator'
       // (unless user explicitly declined)
       if (hasCreatorMessage && lastSenderIsUser && !followUpNeeded) {
         // Check if Gemini detected a decline
-        const declineKeywords = ["not interested", "no thanks", "maybe later", "not now", "no need"];
+        const declineKeywords = ["not interested", "no thanks", "maybe later", "not now", "no need", "oops", "sorry"];
         const lastMsgText = (lastMessage?.text || "").toLowerCase();
         const isDecline = declineKeywords.some(kw => lastMsgText.includes(kw));
         
@@ -425,6 +426,14 @@ ${hasCreatorMessage && lastSenderIsUser ? "- ⚠️ User is waiting for Creator'
           followUpPriority = followUpPriority || "medium";
           suggestedAction = suggestedAction || "Respond to the user's message";
         }
+      }
+
+      // RULE 3: If creator JUST replied, clear follow up (double check)
+      if (messages.length > 0 && messages[messages.length - 1].sender === "me") {
+        followUpNeeded = false;
+        followUpReason = "Creator just replied";
+        followUpPriority = null;
+        suggestedAction = null;
       }
 
       const followUp = {
