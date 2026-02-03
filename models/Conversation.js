@@ -111,6 +111,8 @@ notes: {
   updatedAt: { type: Date }
 },
 
+creatorHasReplied: { type: Boolean, default: false },
+
     // Sorting
     lastActivityAt: { type: Date, required: true },
   },

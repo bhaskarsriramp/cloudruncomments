@@ -59,6 +59,7 @@ async function waitForLock(key, maxWaitMs = 10000) {
  * This happens when a message arrives for a conversation not yet in our DB
  * 
  * 🔥 INCLUDES LOCK MECHANISM to prevent duplicate conversations
+ * 🔥 INCLUDES creatorHasReplied tracking
  */
 export async function findOrCreateConversationByParticipant({
   creatorId,
@@ -201,14 +202,18 @@ export async function findOrCreateConversationByParticipant({
         businessIgUserId
       );
 
-      // 🔥 Calculate unread count and lastParticipantMessageAt
+      // 🔥 Calculate unread count, lastParticipantMessageAt, AND creatorHasReplied
       let unreadCount = 0;
       let lastParticipantMessageAt = null;
+      let creatorHasReplied = false; // 🔥 NEW: Track if creator has replied
 
       for (const msg of fetchedMessages) {
         const isFromBusiness = msg.from?.id === businessIgUserId;
         
-        if (!isFromBusiness) {
+        if (isFromBusiness) {
+          // 🔥 Creator has sent at least one message
+          creatorHasReplied = true;
+        } else {
           unreadCount++;
           
           // Track most recent message from participant
@@ -218,6 +223,8 @@ export async function findOrCreateConversationByParticipant({
           }
         }
       }
+
+      console.log(`📊 Conversation stats: unread=${unreadCount}, creatorHasReplied=${creatorHasReplied}`);
 
       // 🔥 ATOMIC CREATION: Use findOneAndUpdate with upsert to prevent duplicates
       conversation = await Conversation.findOneAndUpdate(
@@ -240,6 +247,7 @@ export async function findOrCreateConversationByParticipant({
             lastMetaCursor: paging?.cursors?.after || null,
             unreadCount: unreadCount,
             lastParticipantMessageAt: lastParticipantMessageAt,
+            creatorHasReplied: creatorHasReplied, // 🔥 NEW: Set based on message analysis
             label: "General",
             labelSource: "auto",
           }
@@ -251,7 +259,7 @@ export async function findOrCreateConversationByParticipant({
         }
       );
 
-      console.log("✅ Conversation created/found:", conversation._id);
+      console.log("✅ Conversation created/found:", conversation._id, "creatorHasReplied:", creatorHasReplied);
       await conversation.populate('participantId');
 
       // STEP 7: Save all fetched messages
@@ -267,6 +275,7 @@ export async function findOrCreateConversationByParticipant({
       console.log(`✅ Saved ${savedMessages.length} messages`);
 
       // 🔥 Publish to Redis so frontend gets the new conversation
+      // 🔥 UPDATED: Include creatorHasReplied in published data
       await publishConversationCreated({
         creatorId: creatorId,
         conversation: {
@@ -276,6 +285,7 @@ export async function findOrCreateConversationByParticipant({
             ? (Date.now() - new Date(lastParticipantMessageAt).getTime() <= 24 * 60 * 60 * 1000)
             : false,
           unreadCount: conversation.unreadCount,
+          creatorHasReplied: creatorHasReplied, // 🔥 Include this!
         },
       });
 

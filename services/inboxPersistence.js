@@ -61,6 +61,7 @@ export async function persistInboxMessage({
       lastActivityAt: createdAt,
       label: "General",
       labelSource: "auto",
+      creatorHasReplied: false, // 🔥 NEW: Default to false for new conversations
     });
     console.log("✅ New conversation created:", conversation._id);
   }
@@ -112,7 +113,7 @@ export async function persistInboxMessage({
 
   // =========================================================
   // 6️⃣ Update conversation snapshot
-  // 🔥 FIXED: Always update if sender is "them" to ensure lastParticipantMessageAt is set
+  // 🔥 FIXED: Update creatorHasReplied when creator sends a message
   // =========================================================
   const updateFields = {
     lastMessage: {
@@ -129,19 +130,20 @@ export async function persistInboxMessage({
     $set: updateFields,
   };
 
-  // 🔥 CRITICAL: Always update lastParticipantMessageAt if sender is "them"
-  // Use $max to ensure we only set if newer
-  if (sender === "them") {
+  // 🔥 CRITICAL: If message is from creator, set creatorHasReplied = true
+  if (sender === "me") {
+    updateOperation.$set.creatorHasReplied = true;
+    updateOperation.$max = {
+      lastActivityAt: createdAt,
+    };
+    console.log("✅ Setting creatorHasReplied = true (creator sent a message)");
+  } else {
+    // For participant messages, update lastParticipantMessageAt
     updateOperation.$max = {
       lastParticipantMessageAt: createdAt,
       lastActivityAt: createdAt,
     };
     updateOperation.$inc = { unreadCount: 1 };
-  } else {
-    // For creator messages, just update lastActivityAt if newer
-    updateOperation.$max = {
-      lastActivityAt: createdAt,
-    };
   }
 
   // 🔥 FIXED: Use simpler update without complex conditions
@@ -159,6 +161,7 @@ export async function persistInboxMessage({
     unreadCount: finalConversation.unreadCount,
     lastActivityAt: finalConversation.lastActivityAt,
     lastParticipantMessageAt: finalConversation.lastParticipantMessageAt,
+    creatorHasReplied: finalConversation.creatorHasReplied,
     sender: sender,
   });
 

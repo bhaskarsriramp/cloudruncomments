@@ -28,9 +28,9 @@ export async function detectLeadRealtime({
   const startTime = Date.now();
 
   try {
-    // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
     // STEP 1: Skip only truly empty messages
-    // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
     if (!messageText || messageText.trim() === "") {
       console.log(`[LeadDetect] Skipping empty message`);
       
@@ -60,10 +60,10 @@ export async function detectLeadRealtime({
       { $set: { aiProcess: "processing" } }
     );
 
-    // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
     // STEP 2: Build Conversation Context
     // Include ALL recent messages for full context
-    // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
     let contextMessages = [];
     let creatorHasReplied = false;
 
@@ -112,10 +112,10 @@ export async function detectLeadRealtime({
 
     console.log(`[LeadDetect] Analyzing ${contextMessages.length} messages | CreatorHasReplied: ${creatorHasReplied} | LastMsgFromUser: ${lastSenderIsUser}`);
 
-    // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
     // STEP 3: Gemini Analysis (Intent + Follow-up)
     // 🔥 Pass creatorHasReplied to Gemini
-    // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
     const geminiResult = await analyzeConversationIntent(contextMessages, creatorHasReplied);
 
     // 🔥 CRITICAL: If Gemini failed, DON'T downgrade existing lead data
@@ -158,9 +158,9 @@ export async function detectLeadRealtime({
       }
     );
 
-    // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
     // STEP 4: Update Conversation (Intent + Follow-up)
-    // ─────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────
     const conversation = await Conversation.findById(conversationId);
     if (!conversation) {
       throw new Error("Conversation not found");
@@ -234,10 +234,10 @@ export async function detectLeadRealtime({
 
       await conversation.save();
 
-      // ─────────────────────────────────────────────
+      // ─────────────────────────────────────────────────────
       // STEP 5: Publish to UI (Fire-and-forget - NO await)
-      // 🔥 FIXED: Include lastParticipantMessageAt so frontend can compute canReply
-      // ─────────────────────────────────────────────
+      // 🔥 FIXED: Include lastParticipantMessageAt AND creatorHasReplied
+      // ─────────────────────────────────────────────────────
       publishConversationUpdate({
         creatorId: creatorId.toString(),
         conversationId: conversationId.toString(),
@@ -252,9 +252,9 @@ export async function detectLeadRealtime({
           // Follow-up fields
           followUpStatus: conversation.followUpStatus,
           
-          // 🔥 CRITICAL: Include lastParticipantMessageAt so frontend can compute canReply
-          // Without this, the TextField gets disabled after label updates
+          // 🔥 CRITICAL: Include these so frontend can compute category correctly
           lastParticipantMessageAt: conversation.lastParticipantMessageAt,
+          creatorHasReplied: creatorHasReplied, // 🔥 NEW: Include this!
         },
       });
 
