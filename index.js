@@ -662,7 +662,7 @@ async function startDirectFlow({
 //   const normalizedText = normalize(text || "");
 
 //   // =========================================================
-//   // 2️⃣ GATE 1: Resolve creator (businessId → user)
+//   // 2️⃣ Resolve creator (businessId → user)
 //   // =========================================================
 //   const creator = await User.findOne({ igUserId: businessId })
 //     .select("_id igUserId")
@@ -674,10 +674,13 @@ async function startDirectFlow({
 //   }
 
 //   // =========================================================
-//   // 3️⃣ Inbox persistence (NON-BLOCKING, ALWAYS SAFE)
+//   // 3️⃣ NEW: Try to find existing conversation OR create it
 //   // =========================================================
+//   let conversationData;
+  
 //   try {
-//     const { conversation, message } = await persistInboxMessage({
+//     // First check if conversation exists via persistInboxMessage
+//     const existingCheck = await persistInboxMessage({
 //       creatorId: creator._id,
 //       businessIgUserId: businessId,
 //       senderIgUserId: senderId,
@@ -688,7 +691,62 @@ async function startDirectFlow({
 //       mediaType,
 //       action,
 //       createdAt: createdAtPlatform,
+//       skipIfNoConversation: true, // NEW FLAG
 //     });
+
+// if (existingCheck) {
+//   // Conversation exists, use it
+//   conversationData = { ...existingCheck, isNew: false }; // 🔥 ADD isNew: false
+// } else {
+//   // Conversation doesn't exist, fetch and create it
+//   console.log("🆕 No conversation found, fetching from Meta...");
+  
+//   const creds = await ensureFreshPageTokenForUser(creator._id);
+  
+//   if (!creds.fbPageAccessToken) {
+//     console.error("❌ Cannot fetch conversation: no access token");
+//     return;
+//   }
+
+//   const discoveryResult = await findOrCreateConversationByParticipant({
+//     creatorId: creator._id,
+//     participantIgUserId: senderId,
+//     businessIgUserId: businessId,
+//     pageAccessToken: creds.fbPageAccessToken,
+//     fbPageId: creds.fbPageId
+//   });
+
+//   console.log("✅ Conversation discovered and created");
+
+//   // Now save the incoming message
+//   const { conversation, message } = await persistInboxMessage({
+//     creatorId: creator._id,
+//     businessIgUserId: businessId,
+//     senderIgUserId: senderId,
+//     igMessageId: messageId,
+//     type,
+//     text,
+//     mediaUrl,
+//     mediaType,
+//     action,
+//     createdAt: createdAtPlatform,
+//   });
+
+//   conversationData = { conversation, message, isNew: true }; // 🔥 ADD isNew: true
+// }
+
+//   } catch (err) {
+//     console.error("❌ Conversation handling failed:", err.message);
+//     return;
+//   }
+
+//   // =========================================================
+//   // 4️⃣ Realtime publish
+//   // =========================================================
+//   try {
+//     const { conversation, message } = conversationData;
+
+//     console.log('conversation ::::::::::::::: ', conversation);
 
 //     await publishInboxMessageHTTP({
 //       creatorId: creator._id.toString(),
@@ -710,8 +768,7 @@ async function startDirectFlow({
 //         unreadCount: conversation.unreadCount,
 //         lastMessage: conversation.lastMessage,
 //         lastActivityAt: conversation.lastActivityAt,
-//         lastParticipantMessageAt:
-//           conversation.lastParticipantMessageAt,
+//         lastParticipantMessageAt: conversation.lastParticipantMessageAt,
 //       },
 //     });
 
@@ -722,17 +779,48 @@ async function startDirectFlow({
 //         lastMessage: conversation.lastMessage,
 //         lastActivityAt: conversation.lastActivityAt,
 //         unreadCount: conversation.unreadCount,
-//         lastParticipantMessageAt:
-//           conversation.lastParticipantMessageAt,
+//         lastParticipantMessageAt: conversation.lastParticipantMessageAt,
 //       },
 //     });
 //   } catch (err) {
-//     console.error("❌ Inbox persistence failed:", err.message);
+//     console.error("❌ Redis publish failed:", err.message);
+//   }
+
+//  try {
+//     const { conversation, message } = conversationData;
+//     const isNewConversation = conversationData.isNew || false;
+
+//     // Only analyze messages from participants with text
+//     if (message.sender === "them" && message.text && message.text.trim()) {
+//       // Fire and forget - don't await, don't block
+//       detectLeadRealtime({
+//         conversationId: conversation._id,
+//         messageId: message._id,
+//         messageText: message.text,
+//         creatorId: creator._id,
+//         isNewConversation, // 🔥 Pass flag to service
+//       }).then((result) => {
+//         if (result.processed) {
+//           console.log(`[LeadDetect] ✅ Processed in ${result.executionMs}ms`, {
+//             isNew: result.isNewConversation,
+//             filtered: result.filtered,
+//             intent: result.newIntent || result.reason,
+//             leadScore: result.leadScore,
+//           });
+//         }
+//       }).catch((err) => {
+//         console.error("[LeadDetect] ❌ Background error:", err.message);
+//       });
+//     }
+//   } catch (err) {
+//     console.error("[LeadDetect] ❌ Trigger error:", err.message);
 //   }
 
 //   // =========================================================
-//   // 4️⃣ PATH A: Existing active conversation → continue flow
+//   // 5️⃣ Continue with existing automation logic
 //   // =========================================================
+  
+//   // Check for active conversation (existing flow logic)
 //   const activeConversation = await ConversationState.findOne({
 //     igUserId: senderId,
 //     status: "active",
@@ -744,9 +832,7 @@ async function startDirectFlow({
 //     return;
 //   }
 
-//   // =========================================================
-//   // 5️⃣ GATE 2: Is ANY autodm automation active for this page?
-//   // =========================================================
+//   // Check for autodm automations (existing logic)
 //   const hasAutoDM = await Automation.exists({
 //     igUserId: businessId,
 //     postType: "autodm",
@@ -759,9 +845,7 @@ async function startDirectFlow({
 //     return;
 //   }
 
-//   // =========================================================
-//   // 6️⃣ GATE 3: Keyword → Automation match
-//   // =========================================================
+//   // Keyword matching logic (existing)
 //   const keywordRegex = new RegExp(`^${escapeRegex(normalizedText)}$`, "i");
 
 //   const automation = await Automation.findOne({
@@ -777,9 +861,7 @@ async function startDirectFlow({
 //     return;
 //   }
 
-//   // =========================================================
-//   // 7️⃣ GATE 4 (CRITICAL): Reserve ActionLock FIRST
-//   // =========================================================
+//   // ActionLock and flow execution (existing logic)
 //   const { proceed } = await reserveAction({
 //     automationId: automation._id,
 //     postId: "autodm",
@@ -794,9 +876,6 @@ async function startDirectFlow({
 //     return;
 //   }
 
-//   // =========================================================
-//   // 8️⃣ Execute automation (SAFE TO RUN ONCE)
-//   // =========================================================
 //   const creds = await ensureFreshPageTokenForUser(automation.userId);
 
 //   if (!creds.fbPageAccessToken) {
@@ -871,7 +950,7 @@ async function handleTextMessage(event, businessId) {
   }
 
   // =========================================================
-  // 3️⃣ NEW: Try to find existing conversation OR create it
+  // 3️⃣ Try to find existing conversation OR create it
   // =========================================================
   let conversationData;
   
@@ -888,49 +967,49 @@ async function handleTextMessage(event, businessId) {
       mediaType,
       action,
       createdAt: createdAtPlatform,
-      skipIfNoConversation: true, // NEW FLAG
+      skipIfNoConversation: true, 
     });
 
-if (existingCheck) {
-  // Conversation exists, use it
-  conversationData = { ...existingCheck, isNew: false }; // 🔥 ADD isNew: false
-} else {
-  // Conversation doesn't exist, fetch and create it
-  console.log("🆕 No conversation found, fetching from Meta...");
-  
-  const creds = await ensureFreshPageTokenForUser(creator._id);
-  
-  if (!creds.fbPageAccessToken) {
-    console.error("❌ Cannot fetch conversation: no access token");
-    return;
-  }
+    if (existingCheck) {
+      // Conversation exists, use it
+      conversationData = { ...existingCheck, isNew: false };
+    } else {
+      // Conversation doesn't exist, fetch and create it
+      console.log("🆕 No conversation found, fetching from Meta...");
+      
+      const creds = await ensureFreshPageTokenForUser(creator._id);
+      
+      if (!creds.fbPageAccessToken) {
+        console.error("❌ Cannot fetch conversation: no access token");
+        return;
+      }
 
-  const discoveryResult = await findOrCreateConversationByParticipant({
-    creatorId: creator._id,
-    participantIgUserId: senderId,
-    businessIgUserId: businessId,
-    pageAccessToken: creds.fbPageAccessToken,
-    fbPageId: creds.fbPageId
-  });
+      await findOrCreateConversationByParticipant({
+        creatorId: creator._id,
+        participantIgUserId: senderId,
+        businessIgUserId: businessId,
+        pageAccessToken: creds.fbPageAccessToken,
+        fbPageId: creds.fbPageId
+      });
 
-  console.log("✅ Conversation discovered and created");
+      console.log("✅ Conversation discovered and created");
 
-  // Now save the incoming message
-  const { conversation, message } = await persistInboxMessage({
-    creatorId: creator._id,
-    businessIgUserId: businessId,
-    senderIgUserId: senderId,
-    igMessageId: messageId,
-    type,
-    text,
-    mediaUrl,
-    mediaType,
-    action,
-    createdAt: createdAtPlatform,
-  });
+      // Now save the incoming message
+      const { conversation, message } = await persistInboxMessage({
+        creatorId: creator._id,
+        businessIgUserId: businessId,
+        senderIgUserId: senderId,
+        igMessageId: messageId,
+        type,
+        text,
+        mediaUrl,
+        mediaType,
+        action,
+        createdAt: createdAtPlatform,
+      });
 
-  conversationData = { conversation, message, isNew: true }; // 🔥 ADD isNew: true
-}
+      conversationData = { conversation, message, isNew: true };
+    }
 
   } catch (err) {
     console.error("❌ Conversation handling failed:", err.message);
@@ -938,83 +1017,150 @@ if (existingCheck) {
   }
 
   // =========================================================
-  // 4️⃣ Realtime publish
+  // 4️⃣ Realtime publish & Lead Detection Logic (CONDITIONAL BLOCKING)
   // =========================================================
   try {
     const { conversation, message } = conversationData;
-
-    console.log('conversation ::::::::::::::: ', conversation);
-
-    await publishInboxMessageHTTP({
-      creatorId: creator._id.toString(),
-      conversationId: conversation._id.toString(),
-      message: {
-        _id: message._id.toString(),
-        sender: message.sender,
-        senderType: message.senderType,
-        senderTypeRef: message.senderTypeRef,
-        type: message.type,
-        text: message.text,
-        mediaUrl: message.mediaUrl,
-        mediaType: message.mediaType,
-        action: message.action,
-        createdAtPlatform: message.createdAtPlatform,
-        isRead: message.isRead,
-      },
-      conversation: {
-        unreadCount: conversation.unreadCount,
-        lastMessage: conversation.lastMessage,
-        lastActivityAt: conversation.lastActivityAt,
-        lastParticipantMessageAt: conversation.lastParticipantMessageAt,
-      },
-    });
-
-    await publishConversationUpdate({
-      creatorId: creator._id.toString(),
-      conversationId: conversation._id.toString(),
-      update: {
-        lastMessage: conversation.lastMessage,
-        lastActivityAt: conversation.lastActivityAt,
-        unreadCount: conversation.unreadCount,
-        lastParticipantMessageAt: conversation.lastParticipantMessageAt,
-      },
-    });
-  } catch (err) {
-    console.error("❌ Redis publish failed:", err.message);
-  }
-
- try {
-    const { conversation, message } = conversationData;
     const isNewConversation = conversationData.isNew || false;
+    const currentIntent = conversation.conversationIntent || "General";
+    
+    // We only analyze messages from "them" (participants) with text
+    const shouldAnalyze = message.sender === "them" && message.text && message.text.trim();
 
-    // Only analyze messages from participants with text
-    if (message.sender === "them" && message.text && message.text.trim()) {
-      // Fire and forget - don't await, don't block
-      detectLeadRealtime({
-        conversationId: conversation._id,
-        messageId: message._id,
-        messageText: message.text,
-        creatorId: creator._id,
-        isNewConversation, // 🔥 Pass flag to service
-      }).then((result) => {
-        if (result.processed) {
-          console.log(`[LeadDetect] ✅ Processed in ${result.executionMs}ms`, {
-            isNew: result.isNewConversation,
-            filtered: result.filtered,
-            intent: result.newIntent || result.reason,
-            leadScore: result.leadScore,
-          });
+    // 🟢 FAST PATH: High Priority (Lead/Business) OR No Analysis needed
+    // Logic: If we already know they are a Lead, or if there's nothing to analyze -> Publish IMMEDIATELY
+    if (currentIntent !== "General" || !shouldAnalyze) {
+      console.log(`🚀 [Fast Path] Intent is ${currentIntent}, publishing immediately...`);
+
+      // 1. Publish Message immediately
+      await publishInboxMessageHTTP({
+        creatorId: creator._id.toString(),
+        conversationId: conversation._id.toString(),
+        message: {
+          _id: message._id.toString(),
+          sender: message.sender,
+          senderType: message.senderType,
+          senderTypeRef: message.senderTypeRef,
+          type: message.type,
+          text: message.text,
+          mediaUrl: message.mediaUrl,
+          mediaType: message.mediaType,
+          action: message.action,
+          createdAtPlatform: message.createdAtPlatform,
+          isRead: message.isRead,
+        },
+        conversation: {
+          unreadCount: conversation.unreadCount,
+          lastMessage: conversation.lastMessage,
+          lastActivityAt: conversation.lastActivityAt,
+          lastParticipantMessageAt: conversation.lastParticipantMessageAt,
+          label: conversation.conversationIntent, // Send current label
+        },
+      });
+
+      // 2. Publish Conversation Update immediately (Sidebar update)
+      await publishConversationUpdate({
+        creatorId: creator._id.toString(),
+        conversationId: conversation._id.toString(),
+        update: {
+          lastMessage: conversation.lastMessage,
+          lastActivityAt: conversation.lastActivityAt,
+          unreadCount: conversation.unreadCount,
+          lastParticipantMessageAt: conversation.lastParticipantMessageAt,
+          label: conversation.conversationIntent,
+        },
+      });
+
+      // 3. Run Gemini in background (Fire and Forget)
+      if (shouldAnalyze) {
+        detectLeadRealtime({
+          conversationId: conversation._id,
+          messageId: message._id,
+          messageText: message.text,
+          creatorId: creator._id,
+          isNewConversation,
+        }).catch((err) => console.error("[LeadDetect] ❌ Background error:", err.message));
+      }
+    } 
+    
+    // 🟠 SLOW PATH: Low Priority (General)
+    // Logic: If it's currently General, we WAIT for Gemini to see if it turns into a Lead
+    else {
+      console.log(`⏳ [Slow Path] Intent is General. Holding publish for Gemini analysis...`);
+      
+      let finalLabel = "General";
+      let finalFactors = [];
+
+      try {
+        // 1. Await Gemini Analysis
+        const aiResult = await detectLeadRealtime({
+          conversationId: conversation._id,
+          messageId: message._id,
+          messageText: message.text,
+          creatorId: creator._id,
+          isNewConversation,
+        });
+
+        if (aiResult.processed && aiResult.newIntent) {
+          finalLabel = aiResult.newIntent;
+          finalFactors = aiResult.factors || [];
         }
-      }).catch((err) => {
-        console.error("[LeadDetect] ❌ Background error:", err.message);
+        
+      } catch (aiErr) {
+        console.error("❌ Blocking AI analysis failed, proceeding with publish:", aiErr.message);
+      }
+
+      console.log(`🚀 [Slow Path] Analysis done. Label: ${finalLabel}. Publishing now.`);
+
+      // 2. Publish Message AFTER analysis (with the potentially NEW label)
+      await publishInboxMessageHTTP({
+        creatorId: creator._id.toString(),
+        conversationId: conversation._id.toString(),
+        message: {
+          _id: message._id.toString(),
+          sender: message.sender,
+          senderType: message.senderType,
+          senderTypeRef: message.senderTypeRef,
+          type: message.type,
+          text: message.text,
+          mediaUrl: message.mediaUrl,
+          mediaType: message.mediaType,
+          action: message.action,
+          createdAtPlatform: message.createdAtPlatform,
+          isRead: message.isRead,
+        },
+        conversation: {
+          unreadCount: conversation.unreadCount,
+          lastMessage: conversation.lastMessage,
+          lastActivityAt: conversation.lastActivityAt,
+          lastParticipantMessageAt: conversation.lastParticipantMessageAt,
+          label: finalLabel, // 🔥 Send the UPDATED label
+          factors: finalFactors,
+        },
+      });
+      
+      // 3. Publish Conversation Update AFTER analysis (Sidebar update)
+      // This ensures the conversation jumps to "New Leads" tab if Gemini upgraded it
+      await publishConversationUpdate({
+        creatorId: creator._id.toString(),
+        conversationId: conversation._id.toString(),
+        update: {
+          label: finalLabel, // 🔥 Send the UPDATED label
+          factors: finalFactors,
+          lastMessage: conversation.lastMessage,
+          lastActivityAt: conversation.lastActivityAt,
+          unreadCount: conversation.unreadCount,
+          lastParticipantMessageAt: conversation.lastParticipantMessageAt,
+        },
       });
     }
+
   } catch (err) {
-    console.error("[LeadDetect] ❌ Trigger error:", err.message);
+    console.error("❌ Redis publish / Analysis flow failed:", err.message);
   }
 
   // =========================================================
-  // 5️⃣ Continue with existing automation logic
+  // 5️⃣ Continue with existing automation logic (AutoDM)
   // =========================================================
   
   // Check for active conversation (existing flow logic)
