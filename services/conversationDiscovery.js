@@ -12,6 +12,80 @@ const GRAPH_API_BASE = "https://graph.facebook.com/v24.0";
 const conversationCreationLocks = new Map();
 
 /**
+ * 🔥 HELPER: Recalculate unread count & reply status from DB
+ * Ensures strict consistency between stored Messages and Conversation state
+ */
+async function recalculateConversationMetrics(conversationId) {
+  const messages = await Message.find({
+    conversationId,
+    isDeleted: false,
+  })
+    .sort({ createdAtPlatform: -1 }) // Newest first
+    .lean();
+
+  if (messages.length === 0) {
+    // Safety check for empty conversation
+    await Conversation.updateOne(
+      { _id: conversationId },
+      {
+        $set: {
+          unreadCount: 0,
+          creatorHasReplied: false,
+          lastParticipantMessageAt: null,
+        },
+      }
+    );
+    return await Conversation.findById(conversationId);
+  }
+
+  // Find creator's latest message timestamp
+  let creatorLatestMessageTime = null;
+  for (const m of messages) {
+    if (m.sender === "me") {
+      creatorLatestMessageTime = new Date(m.createdAtPlatform);
+      break; 
+    }
+  }
+
+  let unreadCount = 0;
+  let lastParticipantMessageAt = null;
+
+  // Count user messages newer than creator's latest message
+  for (const m of messages) {
+    if (m.sender === "them") {
+      const msgTime = new Date(m.createdAtPlatform);
+      
+      if (!lastParticipantMessageAt) {
+        lastParticipantMessageAt = msgTime;
+      }
+      
+      // 🔥 FIX: Use >= to catch messages in the same second
+      if (!creatorLatestMessageTime || msgTime >= creatorLatestMessageTime) {
+        unreadCount++;
+      }
+    }
+  }
+
+  const creatorHasReplied = messages.some((m) => m.sender === "me");
+
+  // Update DB and return the fresh document
+  const updatedConv = await Conversation.findByIdAndUpdate(
+    conversationId,
+    {
+      $set: {
+        unreadCount,
+        creatorHasReplied,
+        lastParticipantMessageAt,
+      },
+    },
+    { new: true }
+  );
+
+  console.log(`📊 [Discovery Recalc] Conv ${conversationId}: unread=${unreadCount}, creatorReplied=${creatorHasReplied}`);
+  return updatedConv;
+}
+
+/**
  * Acquire a lock for conversation creation
  * Returns a release function if lock acquired, null if already locked
  */
@@ -57,9 +131,8 @@ async function waitForLock(key, maxWaitMs = 10000) {
 /**
  * Find or create a conversation when we only know the participant's IG User ID
  * This happens when a message arrives for a conversation not yet in our DB
- * 
- * 🔥 INCLUDES LOCK MECHANISM to prevent duplicate conversations
- * 🔥 INCLUDES creatorHasReplied tracking
+ * * 🔥 INCLUDES LOCK MECHANISM to prevent duplicate conversations
+ * 🔥 INCLUDES creatorHasReplied tracking via recalculation
  */
 export async function findOrCreateConversationByParticipant({
   creatorId,
@@ -197,34 +270,11 @@ export async function findOrCreateConversationByParticipant({
       console.log(`✅ Fetched ${fetchedMessages.length} messages`);
 
       // STEP 6: Create conversation record with standardized ID
+      // Note: We initialize with defaults here; recalculateConversationMetrics will fix counts later
       const lastMessage = buildLastMessageSnapshot(
         fetchedMessages[0],
         businessIgUserId
       );
-
-      // 🔥 Calculate unread count, lastParticipantMessageAt, AND creatorHasReplied
-      let unreadCount = 0;
-      let lastParticipantMessageAt = null;
-      let creatorHasReplied = false; // 🔥 NEW: Track if creator has replied
-
-      for (const msg of fetchedMessages) {
-        const isFromBusiness = msg.from?.id === businessIgUserId;
-        
-        if (isFromBusiness) {
-          // 🔥 Creator has sent at least one message
-          creatorHasReplied = true;
-        } else {
-          unreadCount++;
-          
-          // Track most recent message from participant
-          const msgTime = new Date(msg.created_time);
-          if (!lastParticipantMessageAt || msgTime > lastParticipantMessageAt) {
-            lastParticipantMessageAt = msgTime;
-          }
-        }
-      }
-
-      console.log(`📊 Conversation stats: unread=${unreadCount}, creatorHasReplied=${creatorHasReplied}`);
 
       // 🔥 ATOMIC CREATION: Use findOneAndUpdate with upsert to prevent duplicates
       conversation = await Conversation.findOneAndUpdate(
@@ -245,9 +295,9 @@ export async function findOrCreateConversationByParticipant({
             lastActivityAt: new Date(fetchedMessages[0]?.created_time || Date.now()),
             lastSyncedAt: new Date(),
             lastMetaCursor: paging?.cursors?.after || null,
-            unreadCount: unreadCount,
-            lastParticipantMessageAt: lastParticipantMessageAt,
-            creatorHasReplied: creatorHasReplied, // 🔥 NEW: Set based on message analysis
+            unreadCount: 0, // Placeholder
+            lastParticipantMessageAt: null, // Placeholder
+            creatorHasReplied: false, // Placeholder
             label: "General",
             labelSource: "auto",
           }
@@ -259,7 +309,7 @@ export async function findOrCreateConversationByParticipant({
         }
       );
 
-      console.log("✅ Conversation created/found:", conversation._id, "creatorHasReplied:", creatorHasReplied);
+      console.log("✅ Conversation created/found:", conversation._id);
       await conversation.populate('participantId');
 
       // STEP 7: Save all fetched messages
@@ -274,25 +324,29 @@ export async function findOrCreateConversationByParticipant({
 
       console.log(`✅ Saved ${savedMessages.length} messages`);
 
+      // 🔥 STEP 8: RECALCULATE METRICS (The Fix)
+      // Now that messages are saved, calculate the TRUE state
+      const finalConversation = await recalculateConversationMetrics(conversation._id);
+
       // 🔥 Publish to Redis so frontend gets the new conversation
-      // 🔥 UPDATED: Include creatorHasReplied in published data
       await publishConversationCreated({
         creatorId: creatorId,
         conversation: {
-          ...conversation.toObject(),
+          ...finalConversation.toObject(),
           participant: participant.toObject ? participant.toObject() : participant,
-          canReply: lastParticipantMessageAt 
-            ? (Date.now() - new Date(lastParticipantMessageAt).getTime() <= 24 * 60 * 60 * 1000)
+          // Calculate if reply window is open
+          canReply: finalConversation.lastParticipantMessageAt 
+            ? (Date.now() - new Date(finalConversation.lastParticipantMessageAt).getTime() <= 24 * 60 * 60 * 1000)
             : false,
-          unreadCount: conversation.unreadCount,
-          creatorHasReplied: creatorHasReplied, // 🔥 Include this!
+          unreadCount: finalConversation.unreadCount, // From recalculated
+          creatorHasReplied: finalConversation.creatorHasReplied, // From recalculated
         },
       });
 
       console.log("✅ Published new conversation to Redis");
 
       return {
-        conversation,
+        conversation: finalConversation, // Return the recalculated conversation
         participant,
         messages: savedMessages,
         isNew: true,

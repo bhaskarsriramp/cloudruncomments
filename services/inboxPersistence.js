@@ -3,6 +3,82 @@ import Conversation from "../models/Conversation.js";
 import Message from "../models/Message.js";
 import Participant from "../models/Participant.js";
 
+/**
+ * 🔥 HELPER: Recalculate unread count & reply status from DB
+ * Ensures strict consistency between stored Messages and Conversation state
+ */
+async function recalculateConversationMetrics(conversationId) {
+  const messages = await Message.find({
+    conversationId,
+    isDeleted: false,
+  })
+    .sort({ createdAtPlatform: -1 }) // Newest first
+    .lean();
+
+  if (messages.length === 0) {
+    await Conversation.updateOne(
+      { _id: conversationId },
+      {
+        $set: {
+          unreadCount: 0,
+          creatorHasReplied: false,
+          lastParticipantMessageAt: null,
+        },
+      }
+    );
+    return { unreadCount: 0, creatorHasReplied: false, lastParticipantMessageAt: null };
+  }
+
+  // Find creator's latest message timestamp
+  let creatorLatestMessageTime = null;
+  for (const m of messages) {
+    if (m.sender === "me") {
+      creatorLatestMessageTime = new Date(m.createdAtPlatform);
+      break; 
+    }
+  }
+
+  let unreadCount = 0;
+  let lastParticipantMessageAt = null;
+
+  // Count user messages newer than creator's latest message
+  for (const m of messages) {
+    if (m.sender === "them") {
+      const msgTime = new Date(m.createdAtPlatform);
+
+      if (!lastParticipantMessageAt) {
+        lastParticipantMessageAt = msgTime;
+      }
+
+      // 🔥 FIX: Use >= to catch messages in the same second
+      if (!creatorLatestMessageTime || msgTime >= creatorLatestMessageTime) {
+        unreadCount++;
+      }
+    }
+  }
+
+  const creatorHasReplied = messages.some((m) => m.sender === "me");
+
+  // Update the conversation with the recalculated values
+  const updatedConv = await Conversation.findByIdAndUpdate(
+    conversationId,
+    {
+      $set: {
+        unreadCount,
+        creatorHasReplied,
+        lastParticipantMessageAt,
+      },
+    },
+    { new: true }
+  );
+
+  console.log(
+    `📊 [recalculateMetrics] Conv ${conversationId}: unread=${unreadCount}, creatorReplied=${creatorHasReplied}`
+  );
+
+  return updatedConv;
+}
+
 export async function persistInboxMessage({
   creatorId,
   businessIgUserId,
@@ -61,7 +137,7 @@ export async function persistInboxMessage({
       lastActivityAt: createdAt,
       label: "General",
       labelSource: "auto",
-      creatorHasReplied: false, // 🔥 NEW: Default to false for new conversations
+      creatorHasReplied: false, 
     });
     console.log("✅ New conversation created:", conversation._id);
   }
@@ -112,8 +188,9 @@ export async function persistInboxMessage({
   console.log("✅ Message created:", message._id);
 
   // =========================================================
-  // 6️⃣ Update conversation snapshot
-  // 🔥 FIXED: Update creatorHasReplied when creator sends a message
+  // 6️⃣ Update conversation snapshot (Snapshot only)
+  // 🔥 We REMOVED the manual unreadCount incrementing here.
+  // We only update lastMessage and timestamps. Recalculate handles the counts.
   // =========================================================
   const updateFields = {
     lastMessage: {
@@ -125,36 +202,24 @@ export async function persistInboxMessage({
     lastSyncedAt: new Date(),
   };
 
-  // Build update operation
+  // Build update operation for timestamps
   const updateOperation = {
     $set: updateFields,
+    $max: { lastActivityAt: createdAt } // Always update activity time
   };
 
-  // 🔥 CRITICAL: If message is from creator, set creatorHasReplied = true
-  if (sender === "me") {
-    updateOperation.$set.creatorHasReplied = true;
-    updateOperation.$max = {
-      lastActivityAt: createdAt,
-    };
-    console.log("✅ Setting creatorHasReplied = true (creator sent a message)");
-  } else {
-    // For participant messages, update lastParticipantMessageAt
-    updateOperation.$max = {
-      lastParticipantMessageAt: createdAt,
-      lastActivityAt: createdAt,
-    };
-    updateOperation.$inc = { unreadCount: 1 };
-  }
-
-  // 🔥 FIXED: Use simpler update without complex conditions
-  // $max ensures we only update if the new value is greater
-  const updatedConversation = await Conversation.findByIdAndUpdate(
+  // Update the conversation snapshot first
+  await Conversation.findByIdAndUpdate(
     conversation._id,
     updateOperation,
     { new: true }
   );
 
-  const finalConversation = updatedConversation || conversation;
+  // =========================================================
+  // 7️⃣ 🔥 RECALCULATE METRICS (The Source of Truth)
+  // This guarantees unreadCount and creatorHasReplied are correct based on DB
+  // =========================================================
+  const finalConversation = await recalculateConversationMetrics(conversation._id);
 
   console.log("✅ Conversation updated:", {
     id: finalConversation._id,
