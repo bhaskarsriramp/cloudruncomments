@@ -1160,81 +1160,111 @@ async function handleTextMessage(event, businessId) {
   }
 
   // =========================================================
-  // 5️⃣ Continue with existing automation logic (AutoDM)
+  // 5️⃣ AUTOMATION & FLOW LOGIC (RESTORED)
   // =========================================================
-  
-  // Check for active conversation (existing flow logic)
-  const activeConversation = await ConversationState.findOne({
+
+  // --- PATH A: Existing Conversation Flow (User responding to a Question) ---
+  // If the user is in the middle of a flow (e.g. just replied to a comment automation)
+  const activeConversationState = await ConversationState.findOne({
     igUserId: senderId,
     status: "active",
     expiresAt: { $gt: new Date() },
   }).sort({ startedAt: -1 });
 
-  if (activeConversation) {
-    // Flow continuation handled elsewhere
-    return;
+  if (activeConversationState) {
+    // Only proceed if we are explicitly waiting for user input in a flow
+    if (activeConversationState.currentFlowId === "awaiting_user_response") {
+      console.log("✅ User responded to initial message, 24hr window now open");
+
+      const creds = await ensureFreshPageTokenForUser(activeConversationState.userId);
+      const accessToken = creds.fbPageAccessToken;
+      const fbPageId = creds.fbPageId;
+
+      const initialNode =
+        activeConversationState.flowConfig.initial || activeConversationState.flowConfig[0];
+
+      try {
+        await sendFlowMessage({
+          recipient: { id: String(senderId) },
+          flowNode: initialNode,
+          pageAccessToken: accessToken,
+          fbPageId: fbPageId,
+        });
+
+        // Update state to reflect we sent the message
+        activeConversationState.currentFlowId = String(initialNode.id || "initial");
+        activeConversationState.addHistory({
+          flowId: "initial_response",
+          flowName: "USER_RESPONDED_TO_DM",
+          messageSent: initialNode.message,
+          userReply: text,
+        });
+        await activeConversationState.save();
+
+        console.log("✅ Flow advanced: Initial node sent.");
+      } catch (err) {
+        console.error("❌ Failed to send flow message:", err.message);
+        activeConversationState.markError(err);
+        await activeConversationState.save();
+      }
+    }
+    // Note: If activeConversation exists but NOT "awaiting_user_response", we assume
+    // standard chat or other logic handles it, so we do NOT check keywords below.
   }
 
-  // Check for autodm automations (existing logic)
-  const hasAutoDM = await Automation.exists({
-    igUserId: businessId,
-    postType: "autodm",
-    platform: "instagram",
-    status: "active",
-  });
+  // --- PATH B: New Trigger (Keywords / AutoDM) ---
+  // Only check for new keywords if they aren't already in a specific flow
+  else {
+    const keywordRegex = new RegExp(`^${escapeRegex(normalizedText)}$`, "i");
 
-  if (!hasAutoDM) {
-    console.log("ℹ️ No autodm automations for business:", businessId);
-    return;
+    const automation = await Automation.findOne({
+      userId: creator._id, // Use the creator ID we found earlier
+      postType: "autodm",
+      platform: "instagram",
+      status: "active",
+      keywords: { $in: [keywordRegex] },
+    }).lean();
+
+    if (automation) {
+      console.log(`🎯 Keyword Match! Starting Automation: ${automation._id}`);
+
+      // ActionLock to prevent duplicates
+      try {
+        await ActionLock.create({
+          automationId: automation._id,
+          postType: "autodm",
+          postId: "autodm", // Generic ID for DM triggers
+          igUserId: senderId,
+          commentId: messageId,
+          channel: "private",
+          state: "sent",
+          reservedAt: new Date(),
+          sentAt: new Date(),
+        });
+      } catch (err) {
+        if (err.code === 11000) {
+          console.log("⚠️ Duplicate DM webhook event detected. Skipping automation.");
+          return;
+        }
+        console.error("ActionLock error", err);
+      }
+
+      const creds = await ensureFreshPageTokenForUser(creator._id);
+
+      if (creds.fbPageAccessToken) {
+        await startDirectFlow({
+          automation,
+          igUserId: senderId,
+          pageAccessToken: creds.fbPageAccessToken,
+          fbPageId: creds.fbPageId || businessId,
+          messageId,
+        });
+        console.log("🚀 AutoDM flow started successfully.");
+      } else {
+        console.error("❌ Missing page access token for automation");
+      }
+    }
   }
-
-  // Keyword matching logic (existing)
-  const keywordRegex = new RegExp(`^${escapeRegex(normalizedText)}$`, "i");
-
-  const automation = await Automation.findOne({
-    igUserId: businessId,
-    postType: "autodm",
-    platform: "instagram",
-    status: "active",
-    keywords: { $in: [keywordRegex] },
-  }).lean();
-
-  if (!automation) {
-    console.log("ℹ️ No keyword match for text:", normalizedText);
-    return;
-  }
-
-  // ActionLock and flow execution (existing logic)
-  const { proceed } = await reserveAction({
-    automationId: automation._id,
-    postId: "autodm",
-    igUserId: senderId,
-    commentText: text || "",
-    commentId: messageId,
-    channel: "private",
-  });
-
-  if (!proceed) {
-    console.log("⚠️ Duplicate DM trigger blocked by ActionLock");
-    return;
-  }
-
-  const creds = await ensureFreshPageTokenForUser(automation.userId);
-
-  if (!creds.fbPageAccessToken) {
-    console.error("❌ Missing page access token");
-    return;
-  }
-
-  await startDirectFlow({
-    automation,
-    igUserId: senderId,
-    pageAccessToken: creds.fbPageAccessToken,
-    fbPageId: creds.fbPageId || businessId,
-    messageId,
-  });
-
-  console.log("🚀 AutoDM flow started safely:", automation._id);
 }
 
 
