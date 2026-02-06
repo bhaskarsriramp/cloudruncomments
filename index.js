@@ -617,24 +617,25 @@ async function startDirectFlow({
 }
 
 
-
+// backup working (no lead)
 // async function handleTextMessage(event, businessId) {
 //   const senderId = event.sender?.id;
-//   const messageId = event.message?.mid;
+//   const messageId = event.message?.mid; // Message ID from Meta
 
-//   // =========================================================
-//   // 0️⃣ Ignore invalid / echo messages
-//   // =========================================================
-//   if (!senderId || !messageId) return;
-//   if (event.message?.is_echo) return;
+//   // --- NEW: IGNORE ECHOES ---
+//   if (event.message?.is_echo) {
+//     return;
+//   }
 
+//   // 🔥 FIX 1: Use Meta timestamp, NOT server time
 //   const createdAtPlatform = event.timestamp
 //     ? new Date(event.timestamp)
 //     : new Date();
 
-//   // =========================================================
-//   // 1️⃣ Normalize incoming message (TEXT / MEDIA / SYSTEM)
-//   // =========================================================
+//   /* =========================================================
+//      🔥 FIX 2: NORMALIZE MESSAGE (TEXT / REEL / ATTACHMENT)
+//      ========================================================= */
+
 //   let type = "text";
 //   let text = event.message?.text || null;
 //   let mediaUrl = null;
@@ -643,275 +644,260 @@ async function startDirectFlow({
 
 //   const attachment = event.message?.attachments?.[0];
 
+//   // Image
 //   if (attachment?.type === "image") {
 //     type = "image";
 //     mediaType = "image";
 //     mediaUrl = attachment.payload?.url || null;
-//   } else if (attachment?.type === "video") {
+//   }
+//   // Video
+//   else if (attachment?.type === "video") {
 //     type = "video";
 //     mediaType = "video";
 //     mediaUrl = attachment.payload?.url || null;
-//   } else if (event.message?.is_unsupported) {
+//   }
+//   // Unsupported (reel / post / story share)
+//   else if (event.message?.is_unsupported) {
 //     type = "system";
-//     text = "Shared unsupported content";
-//   } else if (!text) {
+//     text = "Shared a reel";
+//     action = {
+//       label: "View on Instagram",
+//       url: "https://www.instagram.com/direct/inbox/",
+//     };
+//   }
+//   // Any other attachment without text
+//   else if (!text) {
 //     type = "system";
 //     text = "Shared an attachment";
 //   }
 
-//   const normalizedText = normalize(text || "");
-
-//   // =========================================================
-//   // 2️⃣ Resolve creator (businessId → user)
-//   // =========================================================
-//   const creator = await User.findOne({ igUserId: businessId })
-//     .select("_id igUserId")
-//     .lean();
-
-//   if (!creator) {
-//     console.log("ℹ️ No creator found for businessId:", businessId);
-//     return;
-//   }
-
-//   // =========================================================
-//   // 3️⃣ NEW: Try to find existing conversation OR create it
-//   // =========================================================
-//   let conversationData;
-  
-//   try {
-//     // First check if conversation exists via persistInboxMessage
-//     const existingCheck = await persistInboxMessage({
-//       creatorId: creator._id,
-//       businessIgUserId: businessId,
-//       senderIgUserId: senderId,
-//       igMessageId: messageId,
-//       type,
-//       text,
-//       mediaUrl,
-//       mediaType,
-//       action,
-//       createdAt: createdAtPlatform,
-//       skipIfNoConversation: true, // NEW FLAG
-//     });
-
-// if (existingCheck) {
-//   // Conversation exists, use it
-//   conversationData = { ...existingCheck, isNew: false }; // 🔥 ADD isNew: false
-// } else {
-//   // Conversation doesn't exist, fetch and create it
-//   console.log("🆕 No conversation found, fetching from Meta...");
-  
-//   const creds = await ensureFreshPageTokenForUser(creator._id);
-  
-//   if (!creds.fbPageAccessToken) {
-//     console.error("❌ Cannot fetch conversation: no access token");
-//     return;
-//   }
-
-//   const discoveryResult = await findOrCreateConversationByParticipant({
-//     creatorId: creator._id,
-//     participantIgUserId: senderId,
-//     businessIgUserId: businessId,
-//     pageAccessToken: creds.fbPageAccessToken,
-//     fbPageId: creds.fbPageId
-//   });
-
-//   console.log("✅ Conversation discovered and created");
-
-//   // Now save the incoming message
-//   const { conversation, message } = await persistInboxMessage({
-//     creatorId: creator._id,
-//     businessIgUserId: businessId,
-//     senderIgUserId: senderId,
-//     igMessageId: messageId,
+//   console.log("💬 Incoming message:", {
+//     senderId,
 //     type,
 //     text,
 //     mediaUrl,
-//     mediaType,
-//     action,
-//     createdAt: createdAtPlatform,
+//     createdAtPlatform,
 //   });
 
-//   conversationData = { conversation, message, isNew: true }; // 🔥 ADD isNew: true
-// }
+//   /* =========================================================
+//      1️⃣ Resolve creator from business IG ID
+//      ========================================================= */
 
-//   } catch (err) {
-//     console.error("❌ Conversation handling failed:", err.message);
-//     return;
-//   }
+//   const creator = await User.findOne({ igUserId: businessId })
+//     .select("_id")
+//     .lean();
 
-//   // =========================================================
-//   // 4️⃣ Realtime publish
-//   // =========================================================
-//   try {
-//     const { conversation, message } = conversationData;
-
-//     console.log('conversation ::::::::::::::: ', conversation);
-
-//     await publishInboxMessageHTTP({
-//       creatorId: creator._id.toString(),
-//       conversationId: conversation._id.toString(),
-//       message: {
-//         _id: message._id.toString(),
-//         sender: message.sender,
-//         senderType: message.senderType,
-//         senderTypeRef: message.senderTypeRef,
-//         type: message.type,
-//         text: message.text,
-//         mediaUrl: message.mediaUrl,
-//         mediaType: message.mediaType,
-//         action: message.action,
-//         createdAtPlatform: message.createdAtPlatform,
-//         isRead: message.isRead,
-//       },
-//       conversation: {
-//         unreadCount: conversation.unreadCount,
-//         lastMessage: conversation.lastMessage,
-//         lastActivityAt: conversation.lastActivityAt,
-//         lastParticipantMessageAt: conversation.lastParticipantMessageAt,
-//       },
-//     });
-
-//     await publishConversationUpdate({
-//       creatorId: creator._id.toString(),
-//       conversationId: conversation._id.toString(),
-//       update: {
-//         lastMessage: conversation.lastMessage,
-//         lastActivityAt: conversation.lastActivityAt,
-//         unreadCount: conversation.unreadCount,
-//         lastParticipantMessageAt: conversation.lastParticipantMessageAt,
-//       },
-//     });
-//   } catch (err) {
-//     console.error("❌ Redis publish failed:", err.message);
-//   }
-
-//  try {
-//     const { conversation, message } = conversationData;
-//     const isNewConversation = conversationData.isNew || false;
-
-//     // Only analyze messages from participants with text
-//     if (message.sender === "them" && message.text && message.text.trim()) {
-//       // Fire and forget - don't await, don't block
-//       detectLeadRealtime({
-//         conversationId: conversation._id,
-//         messageId: message._id,
-//         messageText: message.text,
+//   if (creator) {
+//     try {
+//       const { conversation, message } = await persistInboxMessage({
 //         creatorId: creator._id,
-//         isNewConversation, // 🔥 Pass flag to service
-//       }).then((result) => {
-//         if (result.processed) {
-//           console.log(`[LeadDetect] ✅ Processed in ${result.executionMs}ms`, {
-//             isNew: result.isNewConversation,
-//             filtered: result.filtered,
-//             intent: result.newIntent || result.reason,
-//             leadScore: result.leadScore,
-//           });
-//         }
-//       }).catch((err) => {
-//         console.error("[LeadDetect] ❌ Background error:", err.message);
+//         businessIgUserId: businessId,
+//         senderIgUserId: senderId,
+//         igMessageId: messageId,
+
+//         // 🔥 pass normalized fields
+//         type,
+//         text,
+//         mediaUrl,
+//         mediaType,
+//         action,
+
+//         createdAt: createdAtPlatform,
 //       });
+
+//       /* =========================================================
+//          2️⃣ Realtime publish (SAFE FOR ALL MESSAGE TYPES)
+//          ========================================================= */
+
+// await publishInboxMessageHTTP({
+//   creatorId: creator._id.toString(),
+//   conversationId: conversation._id.toString(),
+
+//   // 1️⃣ Message payload (unchanged)
+//   message: {
+//     _id: message._id.toString(),
+
+//     sender: message.sender,
+//     senderType: message.senderType,
+//     senderTypeRef: message.senderTypeRef,
+
+//     type: message.type,
+//     text: message.text,
+//     mediaUrl: message.mediaUrl,
+//     mediaType: message.mediaType,
+//     action: message.action,
+
+//     createdAtPlatform: message.createdAtPlatform,
+//     isRead: message.isRead,
+//   },
+
+//   // 2️⃣ 🔥 AUTHORITATIVE CONVERSATION SNAPSHOT
+//   conversation: {
+//     unreadCount: conversation.unreadCount,
+//     lastMessage: conversation.lastMessage,
+//     lastActivityAt: conversation.lastActivityAt,
+//     lastParticipantMessageAt: conversation.lastParticipantMessageAt
+//   },
+// });
+
+
+//   await publishConversationUpdate({
+//         creatorId: creator._id.toString(),
+//         conversationId: conversation._id.toString(),
+//         update: {
+//           lastMessage: conversation.lastMessage,
+//           lastActivityAt: conversation.lastActivityAt,
+//           unreadCount: conversation.unreadCount,
+//     lastParticipantMessageAt: conversation.lastParticipantMessageAt
+
+//         }
+//       });
+
+//     } catch (e) {
+//       console.error("❌ Inbox persistence failed:", e.message);
 //     }
-//   } catch (err) {
-//     console.error("[LeadDetect] ❌ Trigger error:", err.message);
 //   }
 
-//   // =========================================================
-//   // 5️⃣ Continue with existing automation logic
-//   // =========================================================
-  
-//   // Check for active conversation (existing flow logic)
-//   const activeConversation = await ConversationState.findOne({
+//   /* =========================================================
+//      Existing logic BELOW — UNCHANGED
+//      ========================================================= */
+
+//   const normalizedText = normalize(text || "");
+
+//   // ========================================================================
+//   // PATH A: EXISTING FLOW (User is responding to a Comment->Private Reply)
+//   // ========================================================================
+//   const conversation = await ConversationState.findOne({
 //     igUserId: senderId,
 //     status: "active",
 //     expiresAt: { $gt: new Date() },
 //   }).sort({ startedAt: -1 });
 
-//   if (activeConversation) {
-//     // Flow continuation handled elsewhere
-//     return;
+//   if (conversation) {
+//     if (conversation.currentFlowId === "awaiting_user_response") {
+//       console.log("✅ User responded to initial message, 24hr window now open");
+
+//       const creds = await ensureFreshPageTokenForUser(conversation.userId);
+//       const accessToken = creds.fbPageAccessToken;
+//       const fbPageId = creds.fbPageId;
+
+//       const initialNode =
+//         conversation.flowConfig.initial || conversation.flowConfig[0];
+
+//       try {
+//         await sendFlowMessage({
+//           recipient: { id: String(senderId) },
+//           flowNode: initialNode,
+//           pageAccessToken: accessToken,
+//           fbPageId: fbPageId,
+//         });
+
+//         conversation.currentFlowId = String(initialNode.id || "initial");
+//         conversation.addHistory({
+//           flowId: "initial_response",
+//           flowName: "USER_RESPONDED_TO_DM",
+//           messageSent: initialNode.message,
+//           userReply: text,
+//         });
+//         await conversation.save();
+
+//         console.log("✅ Quick replies sent after user text response");
+//       } catch (err) {
+//         console.error("❌ Failed to send quick replies:", err.message);
+//         conversation.markError(err);
+//         await conversation.save();
+//       }
+//     }
 //   }
 
-//   // Check for autodm automations (existing logic)
-//   const hasAutoDM = await Automation.exists({
-//     igUserId: businessId,
-//     postType: "autodm",
-//     platform: "instagram",
-//     status: "active",
-//   });
+//   // ========================================================================
+//   // PATH B: NEW TRIGGER (User sends a DM Keyword like "Coach", "Link")
+//   // ========================================================================
+//   else {
+//     console.log(
+//       `🔍 No active conversation. Checking keywords for Business ID: ${businessId}`
+//     );
 
-//   if (!hasAutoDM) {
-//     console.log("ℹ️ No autodm automations for business:", businessId);
-//     return;
+//     if (!businessId) {
+//       console.warn("⚠️ Cannot process DM trigger: Missing businessId");
+//       return;
+//     }
+
+//     let user = await User.findOne({ igUserId: businessId }).lean();
+//     const keywordRegex = new RegExp(
+//       `^${escapeRegex(normalizedText)}$`,
+//       "i"
+//     );
+
+//     const automation = await Automation.findOne({
+//       userId: user._id,
+//       postType: "autodm",
+//       platform: "instagram",
+//       status: "active",
+//       keywords: { $in: [keywordRegex] },
+//     }).lean();
+
+//     if (!automation) {
+//       console.log(`ℹ️ No automation found for keyword: "${normalizedText}"`);
+//       return;
+//     }
+
+//     console.log(`🎯 Keyword Match! Starting Automation: ${automation._id}`);
+
+//     try {
+//       await ActionLock.create({
+//         automationId: automation._id,
+//         postType: "autodm",
+//         postId: "automDM12345",
+//         igUserId: senderId,
+//         commentId: messageId,
+//         channel: "private",
+//         state: "sent",
+//         reservedAt: new Date(),
+//         sentAt: new Date(),
+//       });
+//     } catch (err) {
+//       if (err.code === 11000) {
+//         console.log("⚠️ Duplicate DM webhook event detected. Skipping.");
+//         return;
+//       }
+//       console.error("ActionLock error", err);
+//     }
+
+//     const creds = await ensureFreshPageTokenForUser(user._id);
+
+//     if (!creds.fbPageAccessToken) {
+//       console.error("❌ Could not get access token for user");
+//       return;
+//     }
+
+//     await startDirectFlow({
+//       automation,
+//       igUserId: senderId,
+//       pageAccessToken: creds.fbPageAccessToken,
+//       fbPageId: creds.fbPageId || businessId,
+//       messageId,
+//     });
 //   }
-
-//   // Keyword matching logic (existing)
-//   const keywordRegex = new RegExp(`^${escapeRegex(normalizedText)}$`, "i");
-
-//   const automation = await Automation.findOne({
-//     igUserId: businessId,
-//     postType: "autodm",
-//     platform: "instagram",
-//     status: "active",
-//     keywords: { $in: [keywordRegex] },
-//   }).lean();
-
-//   if (!automation) {
-//     console.log("ℹ️ No keyword match for text:", normalizedText);
-//     return;
-//   }
-
-//   // ActionLock and flow execution (existing logic)
-//   const { proceed } = await reserveAction({
-//     automationId: automation._id,
-//     postId: "autodm",
-//     igUserId: senderId,
-//     commentText: text || "",
-//     commentId: messageId,
-//     channel: "private",
-//   });
-
-//   if (!proceed) {
-//     console.log("⚠️ Duplicate DM trigger blocked by ActionLock");
-//     return;
-//   }
-
-//   const creds = await ensureFreshPageTokenForUser(automation.userId);
-
-//   if (!creds.fbPageAccessToken) {
-//     console.error("❌ Missing page access token");
-//     return;
-//   }
-
-//   await startDirectFlow({
-//     automation,
-//     igUserId: senderId,
-//     pageAccessToken: creds.fbPageAccessToken,
-//     fbPageId: creds.fbPageId || businessId,
-//     messageId,
-//   });
-
-//   console.log("🚀 AutoDM flow started safely:", automation._id);
 // }
 
 async function handleTextMessage(event, businessId) {
   const senderId = event.sender?.id;
-  const messageId = event.message?.mid; // Message ID from Meta
+  const messageId = event.message?.mid;
 
-  // --- NEW: IGNORE ECHOES ---
-  if (event.message?.is_echo) {
-    return;
-  }
+  // =========================================================
+  // 0️⃣ Ignore invalid / echo messages
+  // =========================================================
+  if (!senderId || !messageId) return;
+  if (event.message?.is_echo) return;
 
-  // 🔥 FIX 1: Use Meta timestamp, NOT server time
   const createdAtPlatform = event.timestamp
     ? new Date(event.timestamp)
     : new Date();
 
-  /* =========================================================
-     🔥 FIX 2: NORMALIZE MESSAGE (TEXT / REEL / ATTACHMENT)
-     ========================================================= */
-
+  // =========================================================
+  // 1️⃣ Normalize incoming message (TEXT / MEDIA / SYSTEM)
+  // =========================================================
   let type = "text";
   let text = event.message?.text || null;
   let mediaUrl = null;
@@ -920,128 +906,258 @@ async function handleTextMessage(event, businessId) {
 
   const attachment = event.message?.attachments?.[0];
 
-  // Image
   if (attachment?.type === "image") {
     type = "image";
     mediaType = "image";
     mediaUrl = attachment.payload?.url || null;
-  }
-  // Video
-  else if (attachment?.type === "video") {
+  } else if (attachment?.type === "video") {
     type = "video";
     mediaType = "video";
     mediaUrl = attachment.payload?.url || null;
-  }
-  // Unsupported (reel / post / story share)
-  else if (event.message?.is_unsupported) {
+  } else if (event.message?.is_unsupported) {
     type = "system";
-    text = "Shared a reel";
-    action = {
-      label: "View on Instagram",
-      url: "https://www.instagram.com/direct/inbox/",
-    };
-  }
-  // Any other attachment without text
-  else if (!text) {
+    text = "Shared unsupported content";
+  } else if (!text) {
     type = "system";
     text = "Shared an attachment";
   }
 
-  console.log("💬 Incoming message:", {
-    senderId,
-    type,
-    text,
-    mediaUrl,
-    createdAtPlatform,
-  });
+  const normalizedText = normalize(text || "");
 
-  /* =========================================================
-     1️⃣ Resolve creator from business IG ID
-     ========================================================= */
-
+  // =========================================================
+  // 2️⃣ Resolve creator (businessId → user)
+  // =========================================================
   const creator = await User.findOne({ igUserId: businessId })
-    .select("_id")
+    .select("_id igUserId")
     .lean();
 
-  if (creator) {
-    try {
+  if (!creator) {
+    console.log("ℹ️ No creator found for businessId:", businessId);
+    return;
+  }
+
+  // =========================================================
+  // 3️⃣ Try to find existing conversation OR create it
+  // =========================================================
+  let conversationData;
+
+  try {
+    const existingCheck = await persistInboxMessage({
+      creatorId: creator._id,
+      businessIgUserId: businessId,
+      senderIgUserId: senderId,
+      igMessageId: messageId,
+      type,
+      text,
+      mediaUrl,
+      mediaType,
+      action,
+      createdAt: createdAtPlatform,
+      skipIfNoConversation: true,
+    });
+
+    if (existingCheck) {
+      conversationData = { ...existingCheck, isNew: false };
+    } else {
+      console.log("🆕 No conversation found, fetching from Meta...");
+
+      const creds = await ensureFreshPageTokenForUser(creator._id);
+
+      if (!creds.fbPageAccessToken) {
+        console.error("❌ Cannot fetch conversation: no access token");
+        return;
+      }
+
+      await findOrCreateConversationByParticipant({
+        creatorId: creator._id,
+        participantIgUserId: senderId,
+        businessIgUserId: businessId,
+        pageAccessToken: creds.fbPageAccessToken,
+        fbPageId: creds.fbPageId,
+      });
+
+      console.log("✅ Conversation discovered and created");
+
       const { conversation, message } = await persistInboxMessage({
         creatorId: creator._id,
         businessIgUserId: businessId,
         senderIgUserId: senderId,
         igMessageId: messageId,
-
-        // 🔥 pass normalized fields
         type,
         text,
         mediaUrl,
         mediaType,
         action,
-
         createdAt: createdAtPlatform,
       });
 
-      /* =========================================================
-         2️⃣ Realtime publish (SAFE FOR ALL MESSAGE TYPES)
-         ========================================================= */
+      conversationData = { conversation, message, isNew: true };
+    }
+  } catch (err) {
+    console.error("❌ Conversation handling failed:", err.message);
+    return;
+  }
 
-await publishInboxMessageHTTP({
-  creatorId: creator._id.toString(),
-  conversationId: conversation._id.toString(),
+  // =========================================================
+  // 4️⃣ Run Lead Detection + Publish AND Automation in PARALLEL
+  // =========================================================
+  await Promise.allSettled([
+    handleLeadDetectionAndPublish({
+      conversationData,
+      creator,
+    }),
+    handleAutomationFlow({
+      senderId,
+      businessId,
+      messageId,
+      normalizedText,
+      text,
+    }),
+  ]).then(([leadResult, automationResult]) => {
+    if (leadResult.status === "rejected") {
+      console.error("❌ Lead detection flow failed:", leadResult.reason?.message);
+    }
+    if (automationResult.status === "rejected") {
+      console.error("❌ Automation flow failed:", automationResult.reason?.message);
+    }
+  });
+}
 
-  // 1️⃣ Message payload (unchanged)
-  message: {
+// =============================================================================
+// 🔍 LEAD DETECTION + REALTIME PUBLISH
+// =============================================================================
+async function handleLeadDetectionAndPublish({ conversationData, creator }) {
+  const { conversation, message } = conversationData;
+  const isNewConversation = conversationData.isNew || false;
+  const currentIntent = conversation.conversationIntent || "General";
+
+  const shouldAnalyze =
+    message.sender === "them" && message.text && message.text.trim();
+
+  const messagePayload = {
     _id: message._id.toString(),
-
     sender: message.sender,
     senderType: message.senderType,
     senderTypeRef: message.senderTypeRef,
-
     type: message.type,
     text: message.text,
     mediaUrl: message.mediaUrl,
     mediaType: message.mediaType,
     action: message.action,
-
     createdAtPlatform: message.createdAtPlatform,
     isRead: message.isRead,
-  },
+  };
 
-  // 2️⃣ 🔥 AUTHORITATIVE CONVERSATION SNAPSHOT
-  conversation: {
-    unreadCount: conversation.unreadCount,
+  const conversationUpdate = {
     lastMessage: conversation.lastMessage,
     lastActivityAt: conversation.lastActivityAt,
-    lastParticipantMessageAt: conversation.lastParticipantMessageAt
-  },
-});
+    unreadCount: conversation.unreadCount,
+    lastParticipantMessageAt: conversation.lastParticipantMessageAt,
+  };
 
+  // 🟢 FAST PATH: Already a Lead OR nothing to analyze → publish immediately
+  if (currentIntent !== "General" || !shouldAnalyze) {
+    console.log(
+      `🚀 [Fast Path] Intent is ${currentIntent}, publishing immediately...`
+    );
 
-  await publishConversationUpdate({
+    await Promise.all([
+      publishInboxMessageHTTP({
         creatorId: creator._id.toString(),
         conversationId: conversation._id.toString(),
-        update: {
-          lastMessage: conversation.lastMessage,
-          lastActivityAt: conversation.lastActivityAt,
-          unreadCount: conversation.unreadCount,
-    lastParticipantMessageAt: conversation.lastParticipantMessageAt
+        message: messagePayload,
+        conversation: { ...conversationUpdate, label: currentIntent },
+      }),
+      publishConversationUpdate({
+        creatorId: creator._id.toString(),
+        conversationId: conversation._id.toString(),
+        update: { ...conversationUpdate, label: currentIntent },
+      }),
+    ]);
 
-        }
-      });
-
-    } catch (e) {
-      console.error("❌ Inbox persistence failed:", e.message);
+    // Fire-and-forget Gemini if there's something to analyze
+    if (shouldAnalyze) {
+      detectLeadRealtime({
+        conversationId: conversation._id,
+        messageId: message._id,
+        messageText: message.text,
+        creatorId: creator._id,
+        isNewConversation,
+      }).catch((err) =>
+        console.error("[LeadDetect] ❌ Background error:", err.message)
+      );
     }
+
+    return;
   }
 
-  /* =========================================================
-     Existing logic BELOW — UNCHANGED
-     ========================================================= */
+  // 🟠 SLOW PATH: General intent → wait for Gemini, then publish
+  console.log(
+    `⏳ [Slow Path] Intent is General. Holding publish for Gemini analysis...`
+  );
 
-  const normalizedText = normalize(text || "");
+  let finalLabel = "General";
+  let finalFactors = [];
 
+  try {
+    const aiResult = await detectLeadRealtime({
+      conversationId: conversation._id,
+      messageId: message._id,
+      messageText: message.text,
+      creatorId: creator._id,
+      isNewConversation,
+    });
+
+    if (aiResult.processed && aiResult.newIntent) {
+      finalLabel = aiResult.newIntent;
+      finalFactors = aiResult.factors || [];
+    }
+  } catch (aiErr) {
+    console.error(
+      "❌ Blocking AI analysis failed, proceeding with publish:",
+      aiErr.message
+    );
+  }
+
+  console.log(
+    `🚀 [Slow Path] Analysis done. Label: ${finalLabel}. Publishing now.`
+  );
+
+  await Promise.all([
+    publishInboxMessageHTTP({
+      creatorId: creator._id.toString(),
+      conversationId: conversation._id.toString(),
+      message: messagePayload,
+      conversation: {
+        ...conversationUpdate,
+        label: finalLabel,
+        factors: finalFactors,
+      },
+    }),
+    publishConversationUpdate({
+      creatorId: creator._id.toString(),
+      conversationId: conversation._id.toString(),
+      update: {
+        ...conversationUpdate,
+        label: finalLabel,
+        factors: finalFactors,
+      },
+    }),
+  ]);
+}
+
+// =============================================================================
+// 🤖 AUTOMATION FLOW (ConversationState + AutoDM Keywords)
+// =============================================================================
+async function handleAutomationFlow({
+  senderId,
+  businessId,
+  messageId,
+  normalizedText,
+  text,
+}) {
   // ========================================================================
-  // PATH A: EXISTING FLOW (User is responding to a Comment->Private Reply)
+  // PATH A: User is responding to an active Comment→Private Reply flow
   // ========================================================================
   const conversation = await ConversationState.findOne({
     igUserId: senderId,
@@ -1084,77 +1200,74 @@ await publishInboxMessageHTTP({
         await conversation.save();
       }
     }
+
+    return; // Active conversation found, don't check keywords
   }
 
   // ========================================================================
-  // PATH B: NEW TRIGGER (User sends a DM Keyword like "Coach", "Link")
+  // PATH B: No active flow → check AutoDM keyword triggers
   // ========================================================================
-  else {
-    console.log(
-      `🔍 No active conversation. Checking keywords for Business ID: ${businessId}`
-    );
+  console.log(
+    `🔍 No active conversation. Checking keywords for Business ID: ${businessId}`
+  );
 
-    if (!businessId) {
-      console.warn("⚠️ Cannot process DM trigger: Missing businessId");
-      return;
-    }
+  if (!businessId) {
+    console.warn("⚠️ Cannot process DM trigger: Missing businessId");
+    return;
+  }
 
-    let user = await User.findOne({ igUserId: businessId }).lean();
-    const keywordRegex = new RegExp(
-      `^${escapeRegex(normalizedText)}$`,
-      "i"
-    );
+  const user = await User.findOne({ igUserId: businessId }).lean();
+  const keywordRegex = new RegExp(`^${escapeRegex(normalizedText)}$`, "i");
 
-    const automation = await Automation.findOne({
-      userId: user._id,
+  const automation = await Automation.findOne({
+    userId: user._id,
+    postType: "autodm",
+    platform: "instagram",
+    status: "active",
+    keywords: { $in: [keywordRegex] },
+  }).lean();
+
+  if (!automation) {
+    console.log(`ℹ️ No automation found for keyword: "${normalizedText}"`);
+    return;
+  }
+
+  console.log(`🎯 Keyword Match! Starting Automation: ${automation._id}`);
+
+  try {
+    await ActionLock.create({
+      automationId: automation._id,
       postType: "autodm",
-      platform: "instagram",
-      status: "active",
-      keywords: { $in: [keywordRegex] },
-    }).lean();
-
-    if (!automation) {
-      console.log(`ℹ️ No automation found for keyword: "${normalizedText}"`);
-      return;
-    }
-
-    console.log(`🎯 Keyword Match! Starting Automation: ${automation._id}`);
-
-    try {
-      await ActionLock.create({
-        automationId: automation._id,
-        postType: "autodm",
-        postId: "automDM12345",
-        igUserId: senderId,
-        commentId: messageId,
-        channel: "private",
-        state: "sent",
-        reservedAt: new Date(),
-        sentAt: new Date(),
-      });
-    } catch (err) {
-      if (err.code === 11000) {
-        console.log("⚠️ Duplicate DM webhook event detected. Skipping.");
-        return;
-      }
-      console.error("ActionLock error", err);
-    }
-
-    const creds = await ensureFreshPageTokenForUser(user._id);
-
-    if (!creds.fbPageAccessToken) {
-      console.error("❌ Could not get access token for user");
-      return;
-    }
-
-    await startDirectFlow({
-      automation,
+      postId: "automDM12345",
       igUserId: senderId,
-      pageAccessToken: creds.fbPageAccessToken,
-      fbPageId: creds.fbPageId || businessId,
-      messageId,
+      commentId: messageId,
+      channel: "private",
+      state: "sent",
+      reservedAt: new Date(),
+      sentAt: new Date(),
     });
+  } catch (err) {
+    if (err.code === 11000) {
+      console.log("⚠️ Duplicate DM webhook event detected. Skipping.");
+      return;
+    }
+    console.error("ActionLock error", err);
   }
+
+  const creds = await ensureFreshPageTokenForUser(user._id);
+
+  if (!creds.fbPageAccessToken) {
+    console.error("❌ Could not get access token for user");
+    return;
+  }
+
+  await startDirectFlow({
+    automation,
+    igUserId: senderId,
+    pageAccessToken: creds.fbPageAccessToken,
+    fbPageId: creds.fbPageId || businessId,
+    messageId,
+  });
 }
 
 
