@@ -1818,90 +1818,21 @@ async function executeFlowNode({
         fbPageId,
       });
 
+       case "finishingMessage":
+      return await executeFinishingMessageNode({
+        flowNode,
+        conversation,
+        senderId,
+        pageAccessToken,
+        fbPageId,
+      });
+
     default:
       throw new Error(`Unknown node type: ${flowNode.type}`);
   }
 }
 
-/**
- * Execute a quickReply node
- */
-// async function executeQuickReplyNode({
-//   flowNode,
-//   conversation,
-//   senderId,
-//   pageAccessToken,
-//   fbPageId,
-// }) {
 
-//   // LIMITATION: Button Templates only support up to 3 buttons.
-//   // We slice(0, 3) to prevent API errors.
-//   const buttons = (flowNode.replyOptions || [])
-//     .slice(0, 3) 
-//     .map((option) => ({
-//       type: "postback", // Changed to postback for buttons
-//       title: (option.text || "Option").toString().slice(0, 20),
-//       payload: `QR_${flowNode.id}_${option.id}`,
-//     }));
-
-//   if (buttons.length === 0) {
-//     throw new Error("No quick reply options available");
-//   }
-
-//   const url = `${FB_API}/${fbPageId}/messages`;
-  
-//   // MODIFIED: Constructing a Button Template Payload instead of Text+QuickReplies
-//   const buttonBody = {
-//     recipient: { id: String(senderId) },
-//     message: {
-//       attachment: {
-//         type: "template",
-//         payload: {
-//           template_type: "button",
-//           text: flowNode.config?.quickReplyQuestion || "Choose one:",
-//           buttons: buttons,
-//         },
-//       },
-//     },
-//   };
-
-//   console.log("→ Sending quick_reply as BUTTONS to user:", senderId);
-
-//   try {
-//     const { data, status } = await http.post(url, buttonBody, {
-//       params: { access_token: pageAccessToken },
-//     });
-    
-//     if (status >= 400) {
-//       console.error("Facebook API error data:", data);
-//       throw new Error(`Quick replies (buttons) failed: ${JSON.stringify(data)}`);
-//     }
-    
-//     console.log("✅ Quick replies (buttons) sent");
-
-//     // Update conversation
-//     conversation.addHistory({
-//       flowId: String(flowNode.id),
-//       flowName: "QUICK_REPLY_BUTTONS",
-//       messageSent: flowNode.config?.quickReplyQuestion,
-//       timestamp: new Date(),
-//     });
-
-//     conversation.currentFlowId = String(flowNode.id);
-//     await conversation.save();
-
-//     return { success: true, data };
-    
-//   } catch (err) {
-//     if (err.response) {
-//       console.error("FB API response error status:", err.response.status);
-//       console.error("FB API response error data:", err.response.data);
-//     } else {
-//       console.error("Error in HTTP request:", err.message);
-//     }
-//     throw err;
-//   }
-// }
 
 /**
  * Execute a quickReply node with optional image support
@@ -2182,6 +2113,31 @@ async function executeFollowCheckNode({
   }
 }
 
+
+/**
+ * Execute a finishingMessage node — sends the final text and completes the conversation
+ */
+async function executeFinishingMessageNode({
+  flowNode,
+  conversation,
+  senderId,
+  pageAccessToken,
+  fbPageId,
+}) {
+  return await executeAction({
+    action: {
+      type: "finishingMessage",
+      config: flowNode.config,
+    },
+    selectedOption: { text: "finishingMessage", id: flowNode.id },
+    conversation,
+    senderId,
+    pageAccessToken,
+    fbPageId,
+    parentNodeId: flowNode.id,
+  });
+}
+
 /**
  * Execute an action (redirectLink, nested quickReply, etc.)
  */
@@ -2197,75 +2153,12 @@ async function executeAction({
   console.log(`→ Executing action type: ${action.type}`);
 
   switch (action.type) {
-    // case "redirectLink": {
-    //   const redirectUrl = action.config?.redirectUrl || "https://example.com";
-
-    //   console.log("→ Sending redirect link:", redirectUrl);
-
-    //   await sendFlowMessage({
-    //     recipient: { id: senderId },
-    //     flowNode: {
-    //       type: "button",
-    //       message: `You selected: ${selectedOption.text} ✓`,
-    //       buttons: [
-    //         {
-    //           type: "web_url",
-    //           title: "Open Link",
-    //           url: redirectUrl,
-    //         },
-    //       ],
-    //     },
-    //     pageAccessToken,
-    //     fbPageId,
-    //   });
-
-    //   console.log("✅ Redirect link sent");
-    //   return { success: true, completed: true };
-    // }
-
     case "redirectLink": {
   // ✅ web_url button already opened the link
   // ❌ Do NOT send any message
   console.log("ℹ️ Redirect link clicked. No message sent.");
   return { success: true, completed: true };
 }
-
-
-    // case "downloadFile": {
-      
-    //   // Use the redirectUrl from either action type's config
-    //   const redirectUrl = action.config?.redirectUrl || action.config?.downloadFile?.url || "https://example.com";
-    //   const messageText = action.config?.message || "Click below to download:";
-    //   const buttonLabel = action.config?.buttonText || "Download Now";
-      
-    //   // If no valid URL is found, log a warning and exit
-    //   if (!redirectUrl || !redirectUrl.startsWith('http')) {
-    //       console.warn(`⚠️ No valid redirect URL found for action type: ${action.type}`);
-    //       return { success: false, error: `Missing URL for ${action.type}` };
-    //   }
-      
-    //   console.log(`→ Sending ${action.type} link:`, redirectUrl);
-
-    //   await sendFlowMessage({
-    //     recipient: { id: senderId },
-    //     flowNode: {
-    //       type: "button",
-    //       message: messageText, 
-    //       buttons: [
-    //         {
-    //           type: "web_url",
-    //           title: buttonLabel,
-    //           url: redirectUrl,
-    //         },
-    //       ],
-    //     },
-    //     pageAccessToken,
-    //     fbPageId,
-    //   });
-
-    //   console.log(`✅ ${action.type} link sent`);
-    //   return { success: true, completed: true };
-    // }
 
     case "downloadFile": {
   // ✅ web_url button already handled download
