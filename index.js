@@ -2632,14 +2632,14 @@ async function handlePostback(event) {
     expiresAt: { $gt: new Date() },
   }).sort({ startedAt: -1 });
 
-   const creds = await ensureFreshPageTokenForUser(conversation.userId);
-    const accessToken = creds.fbPageAccessToken;
-    const fbPageId = creds.fbPageId;
-
-  if (!conversation) {
+    if (!conversation) {
     console.log("ℹ️ No conversation found");
     return;
   }
+
+   const creds = await ensureFreshPageTokenForUser(conversation.userId);
+    const accessToken = creds.fbPageAccessToken;
+    const fbPageId = creds.fbPageId;
 
   const flowConfig = conversation.flowConfig || [];
   const firstNode = flowConfig[0];
