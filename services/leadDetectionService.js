@@ -83,7 +83,7 @@ export async function detectLeadRealtime({
         conversationId,
         text: { $exists: true, $ne: null },
       })
-        .sort({ createdAtPlatform: -1 })
+        .sort({ createdAtPlatform: -1, _id: 1 })
         .limit(CONTEXT_MESSAGE_LIMIT)
         .select("sender text type createdAtPlatform")
         .lean();

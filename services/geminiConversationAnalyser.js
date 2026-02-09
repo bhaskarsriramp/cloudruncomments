@@ -459,10 +459,10 @@ ${hasCreatorMessage && lastSenderIsUser ? "- ⚠️ User is waiting for Creator'
         }
       }
 
-      // RULE 3: If creator JUST replied with a REAL message, clear follow up (double check)
-      // System messages from creator don't count as real replies
-      const lastMsg = messages[messages.length - 1];
-      if (messages.length > 0 && lastMsg.sender === "me" && lastMsg.type !== "system") {
+      // RULE 3: If creator JUST replied (last meaningful sender is creator), clear follow up
+      // Uses the pre-computed lastSenderIsUser which already handles system messages
+      // and is more robust against same-timestamp message ordering issues
+      if (!lastSenderIsUser) {
         followUpNeeded = false;
         followUpReason = "Creator just replied";
         followUpPriority = null;
