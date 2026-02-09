@@ -50,6 +50,8 @@ This is NOT just about showing interest - it's about purchase readiness.
 - Just greetings ("Hi", "Hello") with no follow-up
 - Random questions unrelated to services
 - Single word responses with no context
+- **Single-word fitness keywords WITHOUT any conversation context** (e.g., user just sends "Diet", "Coach", "Transformation", "Coaching", "Fitness", "Workout" with NO follow-up, NO goals, NO questions). These are NOT leads - they are vague/lazy messages with zero buying intent.
+- Short keyword-only messages without meaningful engagement (e.g., "Get Details", "Following", "1:1 Coaching" as standalone messages without any real dialogue or context)
 - **User explicitly declined / not interested**
 
 **0.2-0.4 (Casual Inquiry - LOW quality lead)**
@@ -83,11 +85,20 @@ This is NOT just about showing interest - it's about purchase readiness.
 
 ### CRITICAL DISTINCTION:
 
+❌ "Diet" = 0.05 (single word, zero context, NOT a lead)
+❌ "Coach" = 0.05 (single word, zero context, NOT a lead)
+❌ "Transformation" = 0.05 (single word, zero context, NOT a lead)
+❌ "Get Details" = 0.1 (vague keyword, no real engagement)
+❌ "1:1 Coaching" = 0.1 (keyword mention without any context or questions)
 ❌ "What programs do you have?" = 0.3 (just browsing)
 ✅ "I want to lose 25kg, do you have 1:1 coaching?" = 0.75 (specific goal + specific service)
 
 ❌ "How much?" = 0.4 (price shopping)
 ✅ "I'm 85kg, want to reach 60kg in 6 months. What's your 1:1 coaching fee?" = 0.8 (specific goal + timeline + service)
+
+### CONVERSATION WITH ONLY SYSTEM MESSAGES:
+❌ User: "Get Details" → [System/Auto]: auto-message → User: "Following" → [System/Auto]: auto-message → User: "1:1 Coaching"
+   = intent: "General", leadScore: 0.1 (No real dialogue, no creator engagement, just keyword messages + auto-replies)
 
 ## PART 3: FOLLOW-UP DETECTION (⚠️ CRITICAL - READ VERY CAREFULLY)
 
@@ -205,6 +216,11 @@ Respond ONLY with valid JSON (no markdown, no backticks):
 - ⚠️ CRITICAL: followUp.needed can ONLY be true if Creator has sent at least one message
 - If Creator has replied AND last message is from User → followUp.needed should usually be TRUE
 - If followUp.needed is false, set priority to null and suggestedAction to null
+
+### ⚠️ CRITICAL ANTI-INFLATION RULES:
+1. **Single-word / keyword-only messages are NOT leads.** If a user sends just "Diet", "Coach", "Transformation", "Coaching", "1:1 Coaching", "Get Details", or similar short keyword messages WITHOUT sharing goals, asking specific questions, or having a real back-and-forth conversation → intent = "General", leadScore = 0.1 or less. A real lead ENGAGES in conversation, shares context, asks questions, and shows genuine buying intent.
+2. **No meaningful dialogue = No lead.** If the conversation is just the user sending 1-3 short keyword messages and the only creator responses are [System/Auto] messages → this is NOT a lead. There is no real engagement happening.
+3. **[System/Auto] messages are NOT real creator replies.** Messages labeled [System/Auto] are auto-generated/system messages (e.g., unsupported content, automated responses). They do NOT represent the creator personally engaging with the user. Treat them as if the creator never replied.
 `;
 
 /**
@@ -316,17 +332,27 @@ export async function analyzeConversationIntent(messages, creatorHasReplied = fa
   }
 
   // 🔥 Check if creator has replied (from messages array as backup)
-  const hasCreatorMessage = creatorHasReplied || messages.some(m => m.sender === "me");
-  
-  // Determine last message sender
-  const lastMessage = messages[messages.length - 1];
-  const lastSenderIsUser = lastMessage?.sender !== "me";
+  // System messages (auto-generated) do NOT count as real creator replies
+  const hasCreatorMessage = creatorHasReplied || messages.some(m => m.sender === "me" && m.type !== "system");
+
+  // Determine last MEANINGFUL message sender (skip system messages from creator)
+  // System messages from creator are auto-generated, not real engagement
+  const lastMeaningfulMessage = [...messages].reverse().find(
+    m => !(m.sender === "me" && m.type === "system")
+  );
+  const lastSenderIsUser = lastMeaningfulMessage?.sender !== "me";
   
   // Build conversation context
   const now = new Date();
   const conversationText = messages
     .map((m) => {
-      const sender = m.sender === "me" ? "Creator" : "User";
+      // Label system messages from creator as [System] so Gemini knows it's NOT a real reply
+      let sender;
+      if (m.sender === "me" && m.type === "system") {
+        sender = "[System/Auto]";
+      } else {
+        sender = m.sender === "me" ? "Creator" : "User";
+      }
       const text = (m.text || "[empty]").replace(/[\r\n]+/g, " ").trim().substring(0, 200);
       
       let timeAgo = "";
@@ -433,8 +459,10 @@ ${hasCreatorMessage && lastSenderIsUser ? "- ⚠️ User is waiting for Creator'
         }
       }
 
-      // RULE 3: If creator JUST replied, clear follow up (double check)
-      if (messages.length > 0 && messages[messages.length - 1].sender === "me") {
+      // RULE 3: If creator JUST replied with a REAL message, clear follow up (double check)
+      // System messages from creator don't count as real replies
+      const lastMsg = messages[messages.length - 1];
+      if (messages.length > 0 && lastMsg.sender === "me" && lastMsg.type !== "system") {
         followUpNeeded = false;
         followUpReason = "Creator just replied";
         followUpPriority = null;

@@ -71,6 +71,24 @@ export function quickLocalFilter(messageText) {
   }
 
   // ─────────────────────────────────────────────
+  // SINGLE-WORD KEYWORD MESSAGES → NOT leads
+  // Words like "Diet", "Coach", "Transformation" alone
+  // are vague/lazy messages, not serious lead signals
+  // ─────────────────────────────────────────────
+  const wordCount = text.split(/\s+/).length;
+  if (wordCount <= 2) {
+    const singleWordKeywords = /^(diet|coach|coaching|transformation|fitness|workout|exercise|nutrition|gym|training|plan|program|course|package|batch|slot|session|details|info|following|interested)$/i;
+    if (singleWordKeywords.test(lowerText)) {
+      return { passToGemini: false, label: "single_keyword_noise", confidence: 0.9 };
+    }
+    // Also catch 2-word combos like "Get Details", "1:1 Coaching", "Fat Loss"
+    const twoWordKeywords = /^(get\s*details|1[:\s]*1\s*coaching|fat\s*loss|weight\s*loss|muscle\s*gain|more\s*info|tell\s*more)$/i;
+    if (twoWordKeywords.test(lowerText)) {
+      return { passToGemini: false, label: "single_keyword_noise", confidence: 0.85 };
+    }
+  }
+
+  // ─────────────────────────────────────────────
   // DEFINITE LEAD SIGNALS - Must go to Gemini
   // ─────────────────────────────────────────────
   const leadPatterns = [
@@ -176,6 +194,7 @@ export function getFilterLabel(label) {
     empty: "Empty message",
     too_short: "Too short (<4 chars)",
     noise: "Noise (greeting/emoji/reaction)",
+    single_keyword_noise: "Single keyword (not a lead)",
     lead_signal: "Lead signal detected",
     business_signal: "Business/collab signal",
     long_message: "Long message (>80 chars)",

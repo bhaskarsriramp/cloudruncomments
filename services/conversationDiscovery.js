@@ -38,12 +38,12 @@ async function recalculateConversationMetrics(conversationId) {
     return await Conversation.findById(conversationId);
   }
 
-  // Find creator's latest message timestamp
+  // Find creator's latest REAL message timestamp (exclude system messages)
   let creatorLatestMessageTime = null;
   for (const m of messages) {
-    if (m.sender === "me") {
+    if (m.sender === "me" && m.type !== "system") {
       creatorLatestMessageTime = new Date(m.createdAtPlatform);
-      break; 
+      break;
     }
   }
 
@@ -66,7 +66,8 @@ async function recalculateConversationMetrics(conversationId) {
     }
   }
 
-  const creatorHasReplied = messages.some((m) => m.sender === "me");
+  // Only count real messages (text/image/video) as creator replies, NOT system messages
+  const creatorHasReplied = messages.some((m) => m.sender === "me" && m.type !== "system");
 
   // Update DB and return the fresh document
   const updatedConv = await Conversation.findByIdAndUpdate(

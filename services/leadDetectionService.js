@@ -85,7 +85,7 @@ export async function detectLeadRealtime({
       })
         .sort({ createdAtPlatform: -1 })
         .limit(CONTEXT_MESSAGE_LIMIT)
-        .select("sender text createdAtPlatform")
+        .select("sender text type createdAtPlatform")
         .lean();
 
       if (recentMessages.length === 0) {
@@ -101,8 +101,8 @@ export async function detectLeadRealtime({
         // Reverse to chronological order (oldest first)
         contextMessages = recentMessages.reverse();
         
-        // 🔥 CRITICAL: Check if creator has replied at least once
-        creatorHasReplied = recentMessages.some(m => m.sender === "me");
+        // 🔥 CRITICAL: Check if creator has replied at least once (system messages don't count)
+        creatorHasReplied = recentMessages.some(m => m.sender === "me" && m.type !== "system");
       }
     }
 
