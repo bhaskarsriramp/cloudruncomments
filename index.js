@@ -1011,9 +1011,6 @@ async function handleTextMessage(event, businessId) {
     );
   }
 
-    console.log('lead_agent is false, so NO lead detection ::::::::::');
-
-
   // Always run automation flow
   tasks.push(
     handleAutomationFlow({ senderId, businessId, messageId, normalizedText, text })
