@@ -62,4 +62,4 @@ async function sendWhatsAppAlert(creatorPhone, leadName, leadMessage, urlToken) 
   }
 }
 
-module.exports = { sendWhatsAppAlert };
+export { sendWhatsAppAlert };
