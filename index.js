@@ -928,7 +928,7 @@ async function handleTextMessage(event, businessId) {
   // 2️⃣ Resolve creator (businessId → user)
   // =========================================================
   const creator = await User.findOne({ igUserId: businessId })
-    .select("_id igUserId")
+    .select("_id igUserId lead_agent")
     .lean();
 
   if (!creator) {
@@ -1001,24 +1001,29 @@ async function handleTextMessage(event, businessId) {
   // =========================================================
   // 4️⃣ Run Lead Detection + Publish AND Automation in PARALLEL
   // =========================================================
-  await Promise.allSettled([
-    handleLeadDetectionAndPublish({
-      conversationData,
-      creator,
-    }),
-    handleAutomationFlow({
-      senderId,
-      businessId,
-      messageId,
-      normalizedText,
-      text,
-    }),
-  ]).then(([leadResult, automationResult]) => {
-    if (leadResult.status === "rejected") {
-      console.error("❌ Lead detection flow failed:", leadResult.reason?.message);
-    }
-    if (automationResult.status === "rejected") {
-      console.error("❌ Automation flow failed:", automationResult.reason?.message);
+  const tasks = [];
+
+  // Only do lead detection + realtime publish if lead_agent is true
+  if (creator.lead_agent !== false) {
+    console.log('lead_agent is true, so lead detection started::::::::::');
+    tasks.push(
+      handleLeadDetectionAndPublish({ conversationData, creator })
+    );
+  }
+
+    console.log('lead_agent is false, so NO lead detection ::::::::::');
+
+
+  // Always run automation flow
+  tasks.push(
+    handleAutomationFlow({ senderId, businessId, messageId, normalizedText, text })
+  );
+
+  await Promise.allSettled(tasks).then((results) => {
+    for (const r of results) {
+      if (r.status === "rejected") {
+        console.error("❌ Flow failed:", r.reason?.message);
+      }
     }
   });
 }

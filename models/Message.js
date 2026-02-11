@@ -110,6 +110,9 @@ MessageSchema.index({ conversationId: 1, createdAtPlatform: -1 });
 // Sender analytics
 MessageSchema.index({ senderType: 1, senderId: 1 });
 
+// Mark-as-read updateMany
+MessageSchema.index({ conversationId: 1, sender: 1, isRead: 1 });
+
 const Message =
   mongoose.models.Message ||
   mongoose.model("Message", MessageSchema, "messages");
