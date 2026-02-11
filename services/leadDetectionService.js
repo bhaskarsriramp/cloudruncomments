@@ -251,8 +251,8 @@ export async function detectLeadRealtime({
           const user = await User.findById(creatorId).select("creator_whatsapp_num leads_found leads_plan_limit");
 
           if (user?.creator_whatsapp_num && user.leads_found < user.leads_plan_limit) {
-            const participant = await Participant.findById(conversation.participantId).select("name");
-            const leadName = participant?.name || "Someone";
+            const participant = await Participant.findById(conversation.participantId).select("name username");
+            const leadName = participant?.name || participant?.username || "Someone";
             const leadMessage = conversation.leadUserContext || "Interested in your services";
 
             const result = await sendWhatsAppAlert(
