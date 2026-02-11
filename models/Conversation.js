@@ -113,6 +113,10 @@ notes: {
 
 creatorHasReplied: { type: Boolean, default: false },
 
+leadUserContext: { type: String, default: null },
+whatsappAlertMessageId: { type: String, default: null },
+whatsappAlertSentAt: { type: Date, default: null },
+
     // Sorting
     lastActivityAt: { type: Date, required: true },
   },

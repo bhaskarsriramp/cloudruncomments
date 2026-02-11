@@ -195,6 +195,19 @@ When generating the "reason" field, adopt the persona of a high-tech tactical as
 - "User is actively asking for 1:1 coaching details. Awaiting your response! 🚀"
 - "User sent multiple messages. Immediate response required."
 
+## PART 5: USER CONTEXT (for WhatsApp alerts)
+
+When leadScore >= 0.6, provide a short (max 100 chars) human-readable summary of what the user wants.
+This will be sent as a WhatsApp alert to the creator, so make it concise and actionable.
+
+Examples:
+- "Wants 1:1 coaching for fat loss, shared their number"
+- "Asking about 3-month transformation program pricing"
+- "Ready to enroll in diet plan, asked for payment details"
+- "Interested in personal training, has specific goals (lose 15kg)"
+
+If leadScore < 0.6, set userContext to null.
+
 ## RESPONSE FORMAT
 
 Respond ONLY with valid JSON (no markdown, no backticks):
@@ -203,6 +216,7 @@ Respond ONLY with valid JSON (no markdown, no backticks):
   "confidence": 0.85,
   "leadScore": 0.0,
   "leadQuality": "none|low|medium|high|hot",
+  "userContext": "Short summary of what the lead wants (null if leadScore < 0.6)",
   "factors": ["reason1", "reason2"],
   "followUp": {
     "needed": true|false,
@@ -276,6 +290,10 @@ function extractJson(text) {
     const leadQualityMatch = text.match(/"leadQuality"\s*:\s*"(none|low|medium|high|hot)"/i);
     if (leadQualityMatch) partialData.leadQuality = leadQualityMatch[1];
     
+    // Extract userContext
+    const userContextMatch = text.match(/"userContext"\s*:\s*"([^"]+)"/);
+    if (userContextMatch) partialData.userContext = userContextMatch[1];
+
     // Extract followUp.needed
     const followUpNeededMatch = text.match(/"needed"\s*:\s*(true|false)/i);
     if (followUpNeededMatch) {
@@ -326,6 +344,7 @@ export async function analyzeConversationIntent(messages, creatorHasReplied = fa
       confidence: 0,
       leadScore: 0,
       leadQuality: "none",
+      userContext: null,
       factors: ["No messages to analyze"],
       followUp: {
         needed: false,
@@ -431,6 +450,11 @@ ${hasCreatorMessage && lastSenderIsUser ? "- ⚠️ User is waiting for Creator'
         ? parsed.factors.slice(0, 5).map(String)
         : [];
 
+      // Extract userContext (only meaningful for leads with score >= 0.6)
+      const userContext = (intent === "Lead" && leadScore >= 0.6 && parsed.userContext)
+        ? String(parsed.userContext).substring(0, 150)
+        : null;
+
       // 🔥 CRITICAL: Determine follow-up status
       let followUpNeeded = Boolean(parsed.followUp?.needed);
       let followUpReason = parsed.followUp?.reason ? String(parsed.followUp.reason).substring(0, 200) : null;
@@ -490,6 +514,7 @@ ${hasCreatorMessage && lastSenderIsUser ? "- ⚠️ User is waiting for Creator'
         confidence: Number(confidence.toFixed(3)),
         leadScore: Number(leadScore.toFixed(3)),
         leadQuality,
+        userContext,
         factors,
         followUp,
         creatorHasReplied: hasCreatorMessage,
@@ -529,6 +554,7 @@ ${hasCreatorMessage && lastSenderIsUser ? "- ⚠️ User is waiting for Creator'
         confidence: 0,
         leadScore: 0,
         leadQuality: "none",
+        userContext: null,
         factors: ["Analysis failed"],
         followUp: {
           needed: false,
@@ -550,6 +576,7 @@ ${hasCreatorMessage && lastSenderIsUser ? "- ⚠️ User is waiting for Creator'
     confidence: 0,
     leadScore: 0,
     leadQuality: "none",
+    userContext: null,
     factors: ["Max retries exceeded"],
     followUp: {
       needed: false,

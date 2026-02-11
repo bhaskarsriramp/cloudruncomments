@@ -1,8 +1,11 @@
 // services/leadDetectionService.js
 import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
+import User from "../models/User.js";
+import Participant from "../models/Participant.js";
 import { analyzeConversationIntent } from "./geminiConversationAnalyser.js";
 import { publishConversationUpdate } from "./realtimePublisher.js";
+import { sendWhatsAppAlert } from "./whatsappMessage.js";
 
 const CONTEXT_MESSAGE_LIMIT = 15;
 
@@ -197,6 +200,7 @@ export async function detectLeadRealtime({
           conversation.conversationLeadSeriousnessUpdatedAt = now;
           conversation.conversationLeadQuality = geminiResult.leadQuality;
           conversation.leadFactors = geminiResult.factors;
+          conversation.leadUserContext = geminiResult.userContext || null;
         } else {
           // Clear lead fields if not a lead
           conversation.conversationLeadSeriousness = 0;
@@ -233,6 +237,44 @@ export async function detectLeadRealtime({
       conversation.followUpAnalyzedAt = now;
 
       await conversation.save();
+
+      // ─────────────────────────────────────────────────────
+      // STEP 4.5: WhatsApp Lead Alert (fire-and-forget)
+      // Send alert if serious lead detected & not already alerted
+      // ─────────────────────────────────────────────────────
+      if (
+        geminiResult.intent === "Lead" &&
+        conversation.conversationLeadSeriousness > 0.65 &&
+        !conversation.whatsappAlertMessageId
+      ) {
+        try {
+          const user = await User.findById(creatorId).select("creator_whatsapp_num leads_found leads_plan_limit");
+
+          if (user?.creator_whatsapp_num && user.leads_found < user.leads_plan_limit) {
+            const participant = await Participant.findById(conversation.participantId).select("name");
+            const leadName = participant?.name || "Someone";
+            const leadMessage = conversation.leadUserContext || "Interested in your services";
+
+            const result = await sendWhatsAppAlert(
+              user.creator_whatsapp_num,
+              leadName,
+              leadMessage,
+              conversationId.toString()
+            );
+
+            const wamid = result?.messages?.[0]?.id;
+            if (wamid) {
+              conversation.whatsappAlertMessageId = wamid;
+              conversation.whatsappAlertSentAt = now;
+              await conversation.save();
+              await User.updateOne({ _id: creatorId }, { $inc: { leads_found: 1 } });
+              console.log(`[LeadDetect] 📱 WhatsApp alert sent | wamid: ${wamid}`);
+            }
+          }
+        } catch (alertErr) {
+          console.error(`[LeadDetect] ⚠️ WhatsApp alert failed (non-blocking):`, alertErr.message);
+        }
+      }
 
       // ─────────────────────────────────────────────────────
       // STEP 5: Publish to UI (Fire-and-forget - NO await)
