@@ -78,10 +78,12 @@ This is NOT just about showing interest - it's about purchase readiness.
 **0.8-1.0 (Hot Lead - VERY HIGH quality, ready to convert)**
 - Explicitly asks HOW TO JOIN/ENROLL
 - Asks for payment details
-- Shares contact info (phone, WhatsApp)
+- Shares THEIR OWN contact info (sends their phone number, WhatsApp number, email)
 - Says "I'm ready to start" / "Sign me up"
 - Already decided, just needs logistics
 - Mentions budget they're willing to spend
+
+⚠️ IMPORTANT: User ASKING FOR the creator's phone number / WhatsApp / contact details is NOT a hot lead signal. That is just a contact request (score 0.3-0.4 at most). Only when the user PROVIDES their own contact info is it a strong buying signal.
 
 ### CRITICAL DISTINCTION:
 
@@ -94,6 +96,9 @@ This is NOT just about showing interest - it's about purchase readiness.
 ✅ "I want to lose 25kg, do you have 1:1 coaching?" = 0.75 (specific goal + specific service)
 
 ❌ "How much?" = 0.4 (price shopping)
+❌ "Diet bro" + "What is your phone number?" = 0.3 (vague interest + asking for creator's contact, NOT sharing theirs)
+❌ "Send me your WhatsApp number" = 0.3 (asking for creator's contact info, NOT a buying signal)
+✅ "Here's my number: 9876543210, call me" = 0.8 (user shared THEIR OWN contact info = ready to buy)
 ✅ "I'm 85kg, want to reach 60kg in 6 months. What's your 1:1 coaching fee?" = 0.8 (specific goal + timeline + service)
 
 ### CONVERSATION WITH ONLY SYSTEM MESSAGES:
