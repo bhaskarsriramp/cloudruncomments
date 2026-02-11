@@ -446,7 +446,7 @@ ${hasCreatorMessage && lastSenderIsUser ? "- ⚠️ User is waiting for Creator'
       if (hasCreatorMessage && lastSenderIsUser && !followUpNeeded) {
         // Check if Gemini detected a decline
         const declineKeywords = ["not interested", "no thanks", "maybe later", "not now", "no need", "oops", "sorry"];
-        const lastMsgText = (lastMessage?.text || "").toLowerCase();
+        const lastMsgText = (lastMeaningfulMessage?.text || "").toLowerCase();
         const isDecline = declineKeywords.some(kw => lastMsgText.includes(kw));
         
         if (!isDecline) {
