@@ -267,7 +267,15 @@ export async function detectLeadRealtime({
               conversation.whatsappAlertMessageId = wamid;
               conversation.whatsappAlertSentAt = now;
               await conversation.save();
-              await User.updateOne({ _id: creatorId }, { $inc: { leads_found: 1 } });
+              const updatedUser = await User.findOneAndUpdate(
+                { _id: creatorId },
+                { $inc: { leads_found: 1 } },
+                { new: true, select: "leads_found leads_plan_limit" }
+              );
+              if (updatedUser.leads_found >= updatedUser.leads_plan_limit) {
+                await User.updateOne({ _id: creatorId }, { $set: { lead_agent: false } });
+                console.log(`[LeadDetect] 🛑 Lead limit reached (${updatedUser.leads_found}/${updatedUser.leads_plan_limit}) — lead_agent disabled`);
+              }
               console.log(`[LeadDetect] 📱 WhatsApp alert sent | wamid: ${wamid}`);
             }
           }
