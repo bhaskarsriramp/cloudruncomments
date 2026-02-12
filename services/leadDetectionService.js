@@ -3,9 +3,12 @@ import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
 import User from "../models/User.js";
 import Participant from "../models/Participant.js";
+import crypto from "crypto";
+import MagicToken from "../models/MagicToken.js";
 import { analyzeConversationIntent } from "./geminiConversationAnalyser.js";
 import { publishConversationUpdate } from "./realtimePublisher.js";
 import { sendWhatsAppAlert } from "./whatsappMessage.js";
+
 
 const CONTEXT_MESSAGE_LIMIT = 15;
 
@@ -255,11 +258,18 @@ export async function detectLeadRealtime({
             const leadName = participant?.name || participant?.username || "Someone";
             const leadMessage = conversation.leadUserContext || "Interested in your services";
 
+            const magicTokenStr = crypto.randomBytes(32).toString("hex");
+                                  await MagicToken.create({
+                                    token: magicTokenStr,
+                                    user_id: creatorId,
+                                    expires_at: new Date(Date.now() + 2 * 60 * 60 * 1000), // 2 hours
+                                  });
+
             const result = await sendWhatsAppAlert(
               user.creator_whatsapp_num,
               leadName,
               leadMessage,
-              conversationId.toString()
+              magicTokenStr
             );
 
             const wamid = result?.messages?.[0]?.id;
