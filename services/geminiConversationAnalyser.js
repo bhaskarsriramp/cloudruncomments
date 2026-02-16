@@ -20,6 +20,41 @@ const MAX_DELAY_MS = 15000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Build a context-aware fallback reason from the last user message
+ * Used when the override forces followUp=true but Gemini didn't provide a reason
+ */
+function buildFallbackReason(lastUserText) {
+  const text = (lastUserText || "").toLowerCase().trim();
+
+  if (!text || text === "[empty]") {
+    return "User responded. Conversation pending your reply.";
+  }
+
+  // Nudge / impatience signals
+  if (/^[\?!]+$/.test(text) || /^(hello\??|hi\??|anyone\??|hey\??)$/i.test(text)) {
+    return "User is nudging for a response. Don't leave them waiting.";
+  }
+
+  // Greeting / re-initiation
+  if (/^(hi|hello|hey|hii+|heyy+|good morning|good evening)\b/i.test(text)) {
+    return "User re-initiated contact. Awaiting your response.";
+  }
+
+  // Contains a question
+  if (text.includes("?")) {
+    return "User asked a question. Awaiting your reply.";
+  }
+
+  // Shared info (numbers, links, long text)
+  if (/\d{5,}/.test(text) || text.length > 80) {
+    return "User shared details. Review and respond.";
+  }
+
+  // Default - still conversational, not robotic
+  return "User responded. Conversation pending your reply.";
+}
+
 const SYSTEM_PROMPT = `
 You analyze Instagram DM conversations for fitness creators to:
 1. Identify potential leads/customers  
@@ -482,7 +517,8 @@ ${hasCreatorMessage && lastSenderIsUser ? "- ⚠️ User is waiting for Creator'
           // Gemini might have missed it - user sent a message, creator should respond
           console.log(`[Gemini] ⚠️ Override: Creator has replied, last msg from user, setting followUp=true`);
           followUpNeeded = true;
-          followUpReason = followUpReason || "User sent a message - creator should respond";
+          const lastUserText = (lastMeaningfulMessage?.text || "").trim();
+          followUpReason = followUpReason || buildFallbackReason(lastUserText);
           followUpPriority = followUpPriority || "medium";
           suggestedAction = suggestedAction || "Respond to the user's message";
         }
