@@ -262,7 +262,7 @@ export async function detectLeadRealtime({
                                   await MagicToken.create({
                                     token: magicTokenStr,
                                     user_id: creatorId,
-                                    expires_at: new Date(Date.now() + 2 * 60 * 60 * 1000),
+                                    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
                                     chatUsername: participant?.username || null,
                                   });
 
