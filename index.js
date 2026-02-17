@@ -1034,7 +1034,7 @@ async function handleLeadDetectionAndPublish({ conversationData, creator }) {
   const currentIntent = conversation.conversationIntent || "General";
 
   const shouldAnalyze =
-    message.sender === "them" && message.text && message.text.trim();
+    message.sender === "them" && message.type !== "system" && message.text && message.text.trim();
 
   const messagePayload = {
     _id: message._id.toString(),

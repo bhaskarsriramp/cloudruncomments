@@ -176,10 +176,16 @@ export async function detectLeadRealtime({
     const intentChanged = previousIntent !== geminiResult.intent;
     const now = new Date();
 
+    // Never downgrade from Lead to General — once a lead, only a human can change it back
+    const isDowngrade = previousIntent === "Lead" && geminiResult.intent === "General";
+    if (isDowngrade) {
+      console.log(`[LeadDetect] 🛡️ Skipping downgrade from Lead to General for conversation ${conversationId}`);
+    }
+
     // Check if intent should update
     const shouldUpdateIntent =
       isNewConversation ||
-      intentChanged ||
+      (intentChanged && !isDowngrade) ||
       (geminiResult.intent === "Lead" &&
         geminiResult.leadScore > (conversation.conversationLeadSeriousness || 0));
 
@@ -209,6 +215,7 @@ export async function detectLeadRealtime({
           conversation.conversationLeadSeriousness = 0;
           conversation.conversationLeadQuality = "none";
           conversation.leadFactors = [];
+          conversation.leadUserContext = null;
         }
 
         conversation.labelSource = "ai";
