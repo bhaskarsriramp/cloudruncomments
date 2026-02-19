@@ -3,6 +3,7 @@ import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
 import User from "../models/User.js";
 import Participant from "../models/Participant.js";
+import DmsUsage from "../models/DmsUsage.js";
 import crypto from "crypto";
 import MagicToken from "../models/MagicToken.js";
 import { analyzeConversationIntent } from "./geminiConversationAnalyser.js";
@@ -258,9 +259,15 @@ export async function detectLeadRealtime({
         !conversation.whatsappAlertMessageId
       ) {
         try {
-          const user = await User.findById(creatorId).select("creator_whatsapp_num leads_found leads_plan_limit");
+          const user = await User.findById(creatorId).select("creator_whatsapp_num leads_plan_limit");
+          const currentUsage = await DmsUsage.findOne({
+            user_id: creatorId,
+            year: now.getFullYear(),
+            month: now.getMonth() + 1,
+          }).select("lead_alerts_sent").lean();
+          const currentLeadAlerts = currentUsage?.lead_alerts_sent || 0;
 
-          if (user?.creator_whatsapp_num && user.leads_found < user.leads_plan_limit) {
+          if (user?.creator_whatsapp_num && currentLeadAlerts < user.leads_plan_limit) {
             const participant = await Participant.findById(conversation.participantId).select("name username");
             const leadName = participant?.name || participant?.username || "Someone";
             const leadMessage = conversation.leadUserContext || "Interested in your services";
@@ -285,14 +292,14 @@ export async function detectLeadRealtime({
               conversation.whatsappAlertMessageId = wamid;
               conversation.whatsappAlertSentAt = now;
               await conversation.save();
-              const updatedUser = await User.findOneAndUpdate(
-                { _id: creatorId },
-                { $inc: { leads_found: 1 } },
-                { new: true, select: "leads_found leads_plan_limit" }
+              const updatedUsage = await DmsUsage.findOneAndUpdate(
+                { user_id: creatorId, year: now.getFullYear(), month: now.getMonth() + 1 },
+                { $inc: { lead_alerts_sent: 1 } },
+                { new: true, upsert: true }
               );
-              if (updatedUser.leads_found >= updatedUser.leads_plan_limit) {
+              if (updatedUsage.lead_alerts_sent >= user.leads_plan_limit) {
                 await User.updateOne({ _id: creatorId }, { $set: { lead_agent: false } });
-                console.log(`[LeadDetect] 🛑 Lead limit reached (${updatedUser.leads_found}/${updatedUser.leads_plan_limit}) — lead_agent disabled`);
+                console.log(`[LeadDetect] 🛑 Lead limit reached (${updatedUsage.lead_alerts_sent}/${user.leads_plan_limit}) — lead_agent disabled`);
               }
               console.log(`[LeadDetect] 📱 WhatsApp alert sent | wamid: ${wamid}`);
             }
