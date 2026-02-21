@@ -15,6 +15,7 @@ import levenshtein from "fast-levenshtein";
 import agenda from "./services/agenda.js";
 import { findOrCreateConversationByParticipant } from "./services/conversationDiscovery.js";
 import { detectLeadRealtime } from "./services/leadDetectionService.js";
+import { canSendDM, waitForDMSlot } from "./services/rateLimiter.js";
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
@@ -352,7 +353,7 @@ async function finalizeAction({ automationId, postId, igUserId, commentText, com
 
 
 // ---------- CRITICAL: sendFlowMessage - handles BOTH comment_id (private reply) and user id (DM) ----------
-async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId }) {
+async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId, creatorId }) {
   const { type, message, quick_replies, buttons, cards, media_url } = flowNode || {};
 
   if (!recipient || (!recipient.comment_id && !recipient.id)) {
@@ -398,6 +399,14 @@ async function sendFlowMessage({ recipient, flowNode, pageAccessToken, fbPageId 
   });
 
   const doPost = async (body) => {
+    let allowed = await canSendDM(String(creatorId));
+    if (!allowed) {
+      console.warn(`[RateLimit] Creator ${creatorId} at 180/hr limit. Waiting for slot...`);
+      allowed = await waitForDMSlot(String(creatorId));
+    }
+    if (!allowed) {
+      throw new Error(`[RateLimit] DM slot unavailable for creator ${creatorId} after 2-min wait`);
+    }
     const { data, status } = await http.post(url, body, { params: { access_token: pageAccessToken } });
     if (status >= 400) {
       const err = new Error(`${type} message failed`);
@@ -599,6 +608,15 @@ async function startDirectFlow({
         }
       }
     };
+
+    let rlAllowed = await canSendDM(String(automation.userId));
+    if (!rlAllowed) {
+      console.warn(`[RateLimit] Creator ${automation.userId} at limit in startDirectFlow. Waiting...`);
+      rlAllowed = await waitForDMSlot(String(automation.userId));
+    }
+    if (!rlAllowed) {
+      throw new Error(`[RateLimit] DM slot unavailable for creator ${automation.userId} after 2-min wait`);
+    }
 
     await axios.post(
       `https://graph.facebook.com/v21.0/${fbPageId}/messages`,
@@ -1184,6 +1202,7 @@ async function handleAutomationFlow({
           flowNode: initialNode,
           pageAccessToken: accessToken,
           fbPageId: fbPageId,
+          creatorId: conversation.userId,
         });
 
         conversation.currentFlowId = String(initialNode.id || "initial");
@@ -1930,10 +1949,18 @@ const buttons = (flowNode.replyOptions || [])
   }
 
   try {
+    let rlAllowed = await canSendDM(String(conversation.userId));
+    if (!rlAllowed) {
+      console.warn(`[RateLimit] Creator ${conversation.userId} at limit in quickReply. Waiting...`);
+      rlAllowed = await waitForDMSlot(String(conversation.userId));
+    }
+    if (!rlAllowed) {
+      throw new Error(`[RateLimit] DM slot unavailable for creator ${conversation.userId} after 2-min wait`);
+    }
     const { data, status } = await http.post(url, messageBody, {
       params: { access_token: pageAccessToken },
     });
-    
+
     if (status >= 400) {
       console.error("Facebook API error data:", data);
       throw new Error(`Quick replies failed: ${JSON.stringify(data)}`);
@@ -2096,6 +2123,7 @@ async function executeFollowCheckNode({
         },
         pageAccessToken,
         fbPageId,
+        creatorId: conversation.userId,
       });
 
       conversation.addHistory({
@@ -2261,6 +2289,14 @@ async function executeAction({
       };
 
   try {
+    let rlAllowed = await canSendDM(String(conversation.userId));
+    if (!rlAllowed) {
+      console.warn(`[RateLimit] Creator ${conversation.userId} at limit in nested quickReply. Waiting...`);
+      rlAllowed = await waitForDMSlot(String(conversation.userId));
+    }
+    if (!rlAllowed) {
+      throw new Error(`[RateLimit] DM slot unavailable for creator ${conversation.userId} after 2-min wait`);
+    }
     await http.post(url, messageBody, {
       params: { access_token: pageAccessToken },
     });
@@ -2319,6 +2355,7 @@ async function executeAction({
         },
         pageAccessToken,
         fbPageId,
+        creatorId: conversation.userId,
       });
 
       console.log("✅ Finishing message sent");
@@ -2788,6 +2825,7 @@ if (payload.startsWith("FOLLOWCHECK_RECHECK_")) {
           },
           pageAccessToken: accessToken,
           fbPageId,
+          creatorId: conversation.userId,
         });
       }
       return;

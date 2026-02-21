@@ -13,18 +13,6 @@ import { sendWhatsAppAlert } from "./whatsappMessage.js";
 
 const CONTEXT_MESSAGE_LIMIT = 15;
 
-/**
- * Real-time lead detection + follow-up detection
- * Triggered on new message from participants
- * 
- * NO LOCAL FILTERING - Every message goes to Gemini for full context analysis
- * 
- * FOLLOW-UP LOGIC:
- * - Follow-up is ONLY applicable if creator has replied at least once
- * - If creator has replied AND last message is from user → followUp.needed = true
- * - If creator has replied AND last message is from creator (user went silent) → followUp.needed = true (re-engage)
- * - If creator has NEVER replied → followUp.needed = false (it's just a new message)
- */
 export async function detectLeadRealtime({
   conversationId,
   messageId,
