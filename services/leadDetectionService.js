@@ -1,14 +1,9 @@
 // services/leadDetectionService.js
 import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
-import User from "../models/User.js";
-import Participant from "../models/Participant.js";
-import DmsUsage from "../models/DmsUsage.js";
-import crypto from "crypto";
-import MagicToken from "../models/MagicToken.js";
 import { analyzeConversationIntent } from "./geminiConversationAnalyser.js";
 import { publishConversationUpdate } from "./realtimePublisher.js";
-import { sendWhatsAppAlert } from "./whatsappMessage.js";
+import { queueWhatsAppAlert } from "./queueWhatsAppAlert.js";
 
 
 const CONTEXT_MESSAGE_LIMIT = 15;
@@ -247,53 +242,13 @@ export async function detectLeadRealtime({
         !conversation.whatsappAlertMessageId
       ) {
         try {
-          const user = await User.findById(creatorId).select("creator_whatsapp_num leads_plan_limit");
-          const currentUsage = await DmsUsage.findOne({
-            user_id: creatorId,
-            year: now.getFullYear(),
-            month: now.getMonth() + 1,
-          }).select("lead_alerts_sent").lean();
-          const currentLeadAlerts = currentUsage?.lead_alerts_sent || 0;
-
-          if (user?.creator_whatsapp_num && currentLeadAlerts < user.leads_plan_limit) {
-            const participant = await Participant.findById(conversation.participantId).select("name username");
-            const leadName = participant?.name || participant?.username || "Someone";
-            const leadMessage = conversation.leadUserContext || "Interested in your services";
-
-            const magicTokenStr = crypto.randomBytes(32).toString("hex");
-                                  await MagicToken.create({
-                                    token: magicTokenStr,
-                                    user_id: creatorId,
-                                    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
-                                    chatUsername: participant?.username || null,
-                                  });
-
-            const result = await sendWhatsAppAlert(
-              user.creator_whatsapp_num,
-              leadName,
-              leadMessage,
-              magicTokenStr
-            );
-
-            const wamid = result?.messages?.[0]?.id;
-            if (wamid) {
-              conversation.whatsappAlertMessageId = wamid;
-              conversation.whatsappAlertSentAt = now;
-              await conversation.save();
-              const updatedUsage = await DmsUsage.findOneAndUpdate(
-                { user_id: creatorId, year: now.getFullYear(), month: now.getMonth() + 1 },
-                { $inc: { lead_alerts_sent: 1 } },
-                { new: true, upsert: true }
-              );
-              if (updatedUsage.lead_alerts_sent >= user.leads_plan_limit) {
-                await User.updateOne({ _id: creatorId }, { $set: { lead_agent: false } });
-                console.log(`[LeadDetect] 🛑 Lead limit reached (${updatedUsage.lead_alerts_sent}/${user.leads_plan_limit}) — lead_agent disabled`);
-              }
-              console.log(`[LeadDetect] 📱 WhatsApp alert sent | wamid: ${wamid}`);
-            }
-          }
+          await queueWhatsAppAlert({
+            conversationId: conversationId.toString(),
+            creatorId: creatorId.toString(),
+            participantId: conversation.participantId.toString(),
+          });
         } catch (alertErr) {
-          console.error(`[LeadDetect] ⚠️ WhatsApp alert failed (non-blocking):`, alertErr.message);
+          console.error(`[LeadDetect] ⚠️ WhatsApp alert queue failed (non-blocking):`, alertErr.message);
         }
       }
 
