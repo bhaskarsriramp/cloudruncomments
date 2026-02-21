@@ -6,8 +6,6 @@ import Message from "../models/Message.js";
 import instagramService from "./instagramService.js";
 import { publishConversationCreated } from "./realtimePublisher.js";
 
-const GRAPH_API_BASE = "https://graph.facebook.com/v24.0";
-
 // 🔥 In-memory lock to prevent concurrent conversation creation for same participant
 const conversationCreationLocks = new Map();
 
