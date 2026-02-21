@@ -33,35 +33,45 @@ function sleep(ms) {
 
 // Atomically checks the rolling window and consumes a slot if available.
 // Returns true if a slot was granted, false if rate limited.
+// Fails open (returns true) if Redis is unreachable — prefer sending over blocking.
 export async function canSendDM(creatorId) {
   const key = `rl:${creatorId}`;
   const now = Date.now();
   const member = `${now}:${Math.random().toString(36).substring(2, 11)}`;
 
-  const result = await redis.eval(
-    ROLLING_WINDOW_SCRIPT,
-    1,
-    key,
-    String(now),
-    String(WINDOW_MS),
-    String(RATE_LIMIT_PER_HOUR),
-    member
-  );
-
-  return result === 1;
+  try {
+    const result = await redis.eval(
+      ROLLING_WINDOW_SCRIPT,
+      1,
+      key,
+      String(now),
+      String(WINDOW_MS),
+      String(RATE_LIMIT_PER_HOUR),
+      member
+    );
+    return result === 1;
+  } catch (err) {
+    console.error(`[RateLimit] Redis unavailable for creator ${creatorId}, failing open:`, err.message);
+    return true;
+  }
 }
 
 // Waits through intervals and retries canSendDM until a slot opens or all intervals are exhausted.
 // Returns true if a slot was eventually granted, false if still rate limited after full wait.
 export async function waitForDMSlot(creatorId) {
-  for (const intervalMs of WAIT_INTERVALS_MS) {
-    await sleep(intervalMs);
-    console.log(`[RateLimit] Retrying slot for creator ${creatorId} after ${intervalMs}ms`);
-    const allowed = await canSendDM(creatorId);
-    if (allowed) {
-      console.log(`[RateLimit] Slot acquired for creator ${creatorId}`);
-      return true;
+  try {
+    for (const intervalMs of WAIT_INTERVALS_MS) {
+      await sleep(intervalMs);
+      console.log(`[RateLimit] Retrying slot for creator ${creatorId} after ${intervalMs}ms`);
+      const allowed = await canSendDM(creatorId);
+      if (allowed) {
+        console.log(`[RateLimit] Slot acquired for creator ${creatorId}`);
+        return true;
+      }
     }
+    return false;
+  } catch (err) {
+    console.error(`[RateLimit] waitForDMSlot error for creator ${creatorId}, failing open:`, err.message);
+    return true;
   }
-  return false;
 }

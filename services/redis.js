@@ -6,7 +6,7 @@ const redis = new Redis({
   port: 6379,
   maxRetriesPerRequest: null,
   enableReadyCheck: true,
-  lazyConnect: false,
+  lazyConnect: true,
 });
 
 redis.on("connect", () => {
