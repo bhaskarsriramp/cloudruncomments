@@ -28,8 +28,7 @@ const repliesModel = vertexAI.getGenerativeModel({
   model: "gemini-2.5-flash",
   generationConfig: {
     temperature: 0.75,
-    maxOutputTokens: 500,
-    responseMimeType: "application/json",
+    maxOutputTokens: 2500,
   },
 });
 
