@@ -117,6 +117,19 @@ leadUserContext: { type: String, default: null },
 whatsappAlertMessageId: { type: String, default: null },
 whatsappAlertSentAt: { type: Date, default: null },
 
+    // Quick reply suggestions (AI-generated, cached per conversation)
+    quickReplies: {
+      suggestions: [
+        {
+          text: { type: String },
+          intent: { type: String }, // ask-details | warm-opener | soft-close | reassure | follow-up
+          _id: false,
+        },
+      ],
+      generatedAt: { type: Date, default: null },
+      lastMessageId: { type: String, default: null }, // igMessageId of last message when generated — invalidation key
+    },
+
     // Sorting
     lastActivityAt: { type: Date, required: true },
   },

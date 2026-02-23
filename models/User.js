@@ -88,6 +88,17 @@ const User_Schema = new Schema({
   is_del: { type: Boolean, default: false },
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date },
+
+  // AI-generated writing style fingerprint — used for contextual quick reply generation
+  creatorStyleProfile: {
+    tone: { type: String },                   // e.g. "casual-energetic", "hype", "calm-supportive"
+    emojiUsage: { type: String },             // "frequent" | "occasional" | "none"
+    avgLength: { type: String },              // "short" | "medium" | "long"
+    catchphrases: [{ type: String }],         // up to 5 phrases the creator commonly uses
+    writingGuidelines: { type: String },      // 1-paragraph style description for Gemini to mimic
+    lastAnalyzedAt: { type: Date },
+    sentMessageCountAtAnalysis: { type: Number },
+  },
 });
 
 User_Schema.index({ email: 1, handleUserName: 1 }, { unique: true });

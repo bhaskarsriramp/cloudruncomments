@@ -4,6 +4,7 @@ import Conversation from "../models/Conversation.js";
 import { analyzeConversationIntent } from "./geminiConversationAnalyser.js";
 import { publishConversationUpdate } from "./realtimePublisher.js";
 import { queueWhatsAppAlert } from "./queueWhatsAppAlert.js";
+import { generateQuickReplies } from "./quickRepliesService.js";
 
 
 const CONTEXT_MESSAGE_LIMIT = 15;
@@ -253,6 +254,17 @@ export async function detectLeadRealtime({
       }
 
       // ─────────────────────────────────────────────────────
+      // STEP 4.7: Quick Replies Generation (fire-and-forget)
+      // Only generate when the last message is from the user — that's when
+      // the creator actually needs suggestions to reply with.
+      // ─────────────────────────────────────────────────────
+      if (lastSenderIsUser) {
+        generateQuickReplies(conversationId, creatorId).catch((err) =>
+          console.error(`[LeadDetect] Quick replies generation failed (non-blocking): ${err.message}`)
+        );
+      }
+
+      // ─────────────────────────────────────────────────────
       // STEP 5: Publish to UI (Fire-and-forget - NO await)
       // 🔥 FIXED: Include lastParticipantMessageAt AND creatorHasReplied
       // ─────────────────────────────────────────────────────
@@ -283,6 +295,14 @@ export async function detectLeadRealtime({
       console.log(
         `[LeadDetect] ℹ️ No changes: Intent=${previousIntent}, LeadScore=${geminiResult.leadScore?.toFixed(2)}, CreatorReplied=${creatorHasReplied}, FollowUp=${previousFollowUpNeeded ? "needed" : "not needed"}`
       );
+
+      // Even when intent/follow-up didn't change, a new user message means the
+      // cached quick replies are stale — regenerate them (fire-and-forget).
+      if (lastSenderIsUser) {
+        generateQuickReplies(conversationId, creatorId).catch((err) =>
+          console.error(`[LeadDetect] Quick replies generation failed (non-blocking): ${err.message}`)
+        );
+      }
     }
 
     return {
