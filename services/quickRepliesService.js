@@ -115,6 +115,7 @@ export async function generateQuickReplies(conversationId, creatorId) {
     // ── 2. Fetch last N messages (context window) ────────────────────────────
     const recentMessages = await Message.find({
       conversationId,
+      type: "text",
       text: { $exists: true, $ne: null },
     })
       .sort({ createdAtPlatform: -1 })
