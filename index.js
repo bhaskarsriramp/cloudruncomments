@@ -3114,6 +3114,7 @@ app.post("/api/quick-replies/backfill", async (req, res) => {
         { "quickReplies.suggestions": { $exists: false } },
         { "quickReplies.suggestions": { $size: 0 } },
       ],
+      conversationIntent: { $in: ["Lead", "Business"] },
       creatorHasReplied: false,
       lastParticipantMessageAt: { $exists: true, $ne: null },
     })

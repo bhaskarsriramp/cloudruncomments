@@ -255,10 +255,11 @@ export async function detectLeadRealtime({
 
       // ─────────────────────────────────────────────────────
       // STEP 4.7: Quick Replies Generation (fire-and-forget)
+      // Only for Lead/Business — General conversations don't need AI suggestions.
       // Only generate when the last message is from the user — that's when
       // the creator actually needs suggestions to reply with.
       // ─────────────────────────────────────────────────────
-      if (lastSenderIsUser) {
+      if (lastSenderIsUser && ["Lead", "Business"].includes(geminiResult.intent)) {
         generateQuickReplies(conversationId, creatorId).catch((err) =>
           console.error(`[LeadDetect] Quick replies generation failed (non-blocking): ${err.message}`)
         );
@@ -298,7 +299,8 @@ export async function detectLeadRealtime({
 
       // Even when intent/follow-up didn't change, a new user message means the
       // cached quick replies are stale — regenerate them (fire-and-forget).
-      if (lastSenderIsUser) {
+      // Only for Lead/Business — General conversations don't need AI suggestions.
+      if (lastSenderIsUser && ["Lead", "Business"].includes(previousIntent)) {
         generateQuickReplies(conversationId, creatorId).catch((err) =>
           console.error(`[LeadDetect] Quick replies generation failed (non-blocking): ${err.message}`)
         );
