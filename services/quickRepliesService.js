@@ -34,6 +34,12 @@ const repliesModel = vertexAI.getGenerativeModel({
 
 const CONTEXT_MESSAGE_LIMIT = 6;
 
+const MAX_RETRIES = 3;
+const INITIAL_DELAY_MS = 1000;
+const MAX_DELAY_MS = 15000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // Fallback suggestions when Gemini is unavailable — grouped by conversation intent
 const FALLBACKS = {
   Lead: [
@@ -120,7 +126,7 @@ export async function generateQuickReplies(conversationId, creatorId) {
       })
       .join("\n");
 
-    // ── 6. Build and call Gemini ─────────────────────────────────────────────
+    // ── 6. Build and call Gemini (with exponential backoff retry) ───────────
     const prompt = buildPrompt({
       styleProfile,
       conversationText,
@@ -128,24 +134,54 @@ export async function generateQuickReplies(conversationId, creatorId) {
       leadQuality,
     });
 
-    const response = await repliesModel.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-    });
+    let suggestions = null;
+    let retries = 0;
+    let delay = INITIAL_DELAY_MS;
 
-    const rawText = response.response.candidates?.[0]?.content?.parts?.[0]?.text;
-    const jsonMatch = rawText?.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("No JSON found in Gemini quick replies response");
+    while (retries < MAX_RETRIES) {
+      try {
+        const response = await repliesModel.generateContent({
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+        });
 
-    const parsed = JSON.parse(jsonMatch[0]);
+        const rawText = response.response.candidates?.[0]?.content?.parts?.[0]?.text;
+        const jsonMatch = rawText?.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error("No JSON found in Gemini quick replies response");
 
-    if (!Array.isArray(parsed.replies) || parsed.replies.length === 0) {
-      throw new Error("Gemini returned empty or malformed replies array");
+        const parsed = JSON.parse(jsonMatch[0]);
+
+        if (!Array.isArray(parsed.replies) || parsed.replies.length === 0) {
+          throw new Error("Gemini returned empty or malformed replies array");
+        }
+
+        suggestions = parsed.replies.slice(0, 3).map((r) => ({
+          text: String(r.text || "").substring(0, 300),
+          intent: String(r.intent || "warm-opener"),
+        }));
+
+        break; // success — exit retry loop
+
+      } catch (err) {
+        retries++;
+
+        const isRateLimited =
+          err.message?.includes("429") || err.message?.includes("RESOURCE_EXHAUSTED");
+        const isTransient =
+          err.message?.includes("500") || err.message?.includes("503");
+
+        if ((isRateLimited || isTransient) && retries < MAX_RETRIES) {
+          console.warn(`[QuickReplies] Retry ${retries}/${MAX_RETRIES} after ${delay}ms — ${err.message}`);
+          await sleep(delay);
+          delay = Math.min(delay * 2, MAX_DELAY_MS);
+          continue;
+        }
+
+        // Non-retryable error or retries exhausted — bubble up to fallback
+        throw err;
+      }
     }
 
-    const suggestions = parsed.replies.slice(0, 3).map((r) => ({
-      text: String(r.text || "").substring(0, 300),
-      intent: String(r.intent || "warm-opener"),
-    }));
+    if (!suggestions) throw new Error("Quick replies generation failed after max retries");
 
     // ── 7. Persist suggestions to Conversation (cache) ───────────────────────
     await Conversation.updateOne(

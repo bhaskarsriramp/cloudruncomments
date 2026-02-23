@@ -31,6 +31,12 @@ const INVALIDATE_AFTER_NEW_MESSAGES = 15;
 const STYLE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MIN_MESSAGES_TO_ANALYZE = 10;
 
+const MAX_RETRIES = 3;
+const INITIAL_DELAY_MS = 1000;
+const MAX_DELAY_MS = 15000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // Used when a creator is new or Gemini fails — reads naturally for a fitness account
 const FITNESS_CREATOR_DEFAULT = {
   tone: "casual-energetic",
@@ -136,30 +142,60 @@ Study how they write — their tone, emoji habits, sentence length, vocabulary, 
   "writingGuidelines": "A single paragraph (max 80 words) describing exactly how this creator writes so another AI can perfectly mimic their style when generating replies. Include tone, emoji habits, message length, and any distinctive patterns."
 }`;
 
+  let profile = null;
+  let retries = 0;
+  let delay = INITIAL_DELAY_MS;
+
   try {
-    const response = await styleModel.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-    });
+    while (retries < MAX_RETRIES) {
+      try {
+        const response = await styleModel.generateContent({
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+        });
 
-    const rawText = response.response.candidates?.[0]?.content?.parts?.[0]?.text;
-    const jsonMatch = rawText?.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("No JSON found in Gemini style response");
+        const rawText = response.response.candidates?.[0]?.content?.parts?.[0]?.text;
+        const jsonMatch = rawText?.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error("No JSON found in Gemini style response");
 
-    const parsed = JSON.parse(jsonMatch[0]);
+        const parsed = JSON.parse(jsonMatch[0]);
 
-    const profile = {
-      tone: String(parsed.tone || "conversational"),
-      emojiUsage: String(parsed.emojiUsage || "occasional"),
-      avgLength: String(parsed.avgLength || "short"),
-      catchphrases: Array.isArray(parsed.catchphrases)
-        ? parsed.catchphrases.slice(0, 5).map(String)
-        : [],
-      writingGuidelines: String(
-        parsed.writingGuidelines || FITNESS_CREATOR_DEFAULT.writingGuidelines
-      ),
-      lastAnalyzedAt: new Date(),
-      sentMessageCountAtAnalysis: currentSentCount,
-    };
+        profile = {
+          tone: String(parsed.tone || "conversational"),
+          emojiUsage: String(parsed.emojiUsage || "occasional"),
+          avgLength: String(parsed.avgLength || "short"),
+          catchphrases: Array.isArray(parsed.catchphrases)
+            ? parsed.catchphrases.slice(0, 5).map(String)
+            : [],
+          writingGuidelines: String(
+            parsed.writingGuidelines || FITNESS_CREATOR_DEFAULT.writingGuidelines
+          ),
+          lastAnalyzedAt: new Date(),
+          sentMessageCountAtAnalysis: currentSentCount,
+        };
+
+        break; // success — exit retry loop
+
+      } catch (err) {
+        retries++;
+
+        const isRateLimited =
+          err.message?.includes("429") || err.message?.includes("RESOURCE_EXHAUSTED");
+        const isTransient =
+          err.message?.includes("500") || err.message?.includes("503");
+
+        if ((isRateLimited || isTransient) && retries < MAX_RETRIES) {
+          console.warn(`[StyleService] Retry ${retries}/${MAX_RETRIES} after ${delay}ms — ${err.message}`);
+          await sleep(delay);
+          delay = Math.min(delay * 2, MAX_DELAY_MS);
+          continue;
+        }
+
+        // Non-retryable error or retries exhausted — bubble up to fallback
+        throw err;
+      }
+    }
+
+    if (!profile) throw new Error("Style profile generation failed after max retries");
 
     await User.updateOne(
       { _id: creatorId },

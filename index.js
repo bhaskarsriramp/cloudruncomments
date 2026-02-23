@@ -15,6 +15,7 @@ import levenshtein from "fast-levenshtein";
 import agenda from "./services/agenda.js";
 import { findOrCreateConversationByParticipant } from "./services/conversationDiscovery.js";
 import { detectLeadRealtime } from "./services/leadDetectionService.js";
+import { generateQuickReplies } from "./services/quickRepliesService.js";
 import { canSendDM, waitForDMSlot } from "./services/rateLimiter.js";
 
 const app = express();
@@ -3085,6 +3086,76 @@ if (payload.startsWith("FOLLOWCHECK_RECHECK_")) {
 }
 
 
+
+// ── Quick Replies Backfill ─────────────────────────────────────────────────
+// Called ONCE from the main backend server after deploying the quick replies
+// feature. Finds all conversations that have a waiting user message but no
+// cached suggestions yet, and generates them in batches.
+//
+// POST /api/quick-replies/backfill
+// Header: x-cloudrun-token: <PUBSUB_TOKEN>
+//
+// Optional body: { batchSize: 100 }  (default 150, max 300)
+app.post("/api/quick-replies/backfill", async (req, res) => {
+
+  const batchSize = Math.min(Number(req.body?.batchSize) || 150, 300);
+
+  try {
+    await connectMongo();
+
+    // Find conversations where:
+    //  1. Last message was from the user (creator hasn't replied yet)
+    //  2. quickReplies.suggestions is missing or empty
+    //  3. There is a recent participant message (active conversation)
+    const Conversation = mongoose.models.Conversation || (await import("./models/Conversation.js")).default;
+
+    const stale = await Conversation.find({
+      $or: [
+        { "quickReplies.suggestions": { $exists: false } },
+        { "quickReplies.suggestions": { $size: 0 } },
+      ],
+      creatorHasReplied: false,
+      lastParticipantMessageAt: { $exists: true, $ne: null },
+    })
+      .select("_id creatorId")
+      .limit(batchSize)
+      .lean();
+
+    console.log(`[Backfill] Starting quick replies backfill for ${stale.length} conversations`);
+
+    // Respond immediately — processing continues in background so the HTTP
+    // call doesn't time out on large batches.
+    res.status(202).json({
+      message: "Backfill started",
+      conversationsFound: stale.length,
+    });
+
+    // Process each conversation with a small delay between calls to avoid
+    // hammering Gemini with burst requests.
+    let processed = 0;
+    let failed = 0;
+
+    for (const conv of stale) {
+      try {
+        await generateQuickReplies(conv._id, conv.creatorId);
+        processed++;
+        // 400ms gap — gentle on Gemini rate limits
+        await new Promise((r) => setTimeout(r, 400));
+      } catch (err) {
+        failed++;
+        console.error(`[Backfill] Failed for conversation ${conv._id}: ${err.message}`);
+      }
+    }
+
+    console.log(`[Backfill] ✅ Done — processed: ${processed}, failed: ${failed}, total: ${stale.length}`);
+  } catch (err) {
+    console.error("[Backfill] ❌ Error:", err.message);
+    // res already sent above if we got past the DB query
+    if (!res.headersSent) {
+      return res.status(500).json({ error: "Backfill failed to start" });
+    }
+  }
+});
 
 // Health check
 app.get("/", (_req, res) => res.status(200).send("ok"));
