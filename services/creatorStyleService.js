@@ -12,6 +12,7 @@
 import { VertexAI } from "@google-cloud/vertexai";
 import User from "../models/User.js";
 import Message from "../models/Message.js";
+import Conversation from "../models/Conversation.js";
 
 const vertexAI = new VertexAI({
   project: process.env.GOOGLE_CLOUD_PROJECT,
@@ -30,7 +31,8 @@ const styleModel = vertexAI.getGenerativeModel({
 const STYLE_SAMPLE_LIMIT = 50;
 const INVALIDATE_AFTER_NEW_MESSAGES = 15;
 const STYLE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
-const MIN_MESSAGES_TO_ANALYZE = 10;
+const MIN_LEAD_MESSAGES_TO_ANALYZE = 3;  // lower bar — Lead replies are high-quality signal
+const MIN_MESSAGES_TO_ANALYZE = 10;      // higher bar for mixed all-conversation fallback
 
 const MAX_RETRIES = 3;
 const INITIAL_DELAY_MS = 1000;
@@ -106,18 +108,50 @@ export async function getCreatorStyleProfile(creatorId) {
  * @returns {Promise<Object>} Style profile object
  */
 async function buildAndCacheStyleProfile(creatorId, currentSentCount) {
-  const sentMessages = await Message.find({
-    senderId: creatorId,
-    sender: "me",
-    type: "text",
-    text: { $exists: true, $ne: null },
+  // ── Tier 1: messages from Lead conversations only ────────────────────────
+  // These best represent how the creator writes when engaging potential customers.
+  const leadConversationIds = await Conversation.find({
+    creatorId,
+    conversationIntent: "Lead",
   })
-    .sort({ createdAtPlatform: -1 })
-    .limit(STYLE_SAMPLE_LIMIT)
-    .select("text")
-    .lean();
+    .select("_id")
+    .lean()
+    .then((convs) => convs.map((c) => c._id));
 
-  // Not enough data yet — use default and do NOT persist so we try again next time
+  let sentMessages = [];
+
+  if (leadConversationIds.length > 0) {
+    sentMessages = await Message.find({
+      senderId: creatorId,
+      sender: "me",
+      type: "text",
+      text: { $exists: true, $ne: null },
+      conversationId: { $in: leadConversationIds },
+    })
+      .sort({ createdAtPlatform: -1 })
+      .limit(STYLE_SAMPLE_LIMIT)
+      .select("text")
+      .lean();
+  }
+
+  // ── Tier 2: fall back to all sent messages if not enough Lead replies ────
+  if (sentMessages.length < MIN_LEAD_MESSAGES_TO_ANALYZE) {
+    console.log(
+      `[StyleService] Only ${sentMessages.length} Lead-conversation messages — falling back to all sent messages`
+    );
+    sentMessages = await Message.find({
+      senderId: creatorId,
+      sender: "me",
+      type: "text",
+      text: { $exists: true, $ne: null },
+    })
+      .sort({ createdAtPlatform: -1 })
+      .limit(STYLE_SAMPLE_LIMIT)
+      .select("text")
+      .lean();
+  }
+
+  // Not enough data at all — use default and do NOT persist so we try again next time
   if (sentMessages.length < MIN_MESSAGES_TO_ANALYZE) {
     console.log(
       `[StyleService] Creator ${creatorId} has only ${sentMessages.length} sent messages — using default (need ${MIN_MESSAGES_TO_ANALYZE})`
