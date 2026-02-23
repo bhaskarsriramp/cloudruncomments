@@ -35,8 +35,7 @@ const MIN_LEAD_MESSAGES_TO_ANALYZE = 3;  // lower bar — Lead replies are high-
 const MIN_MESSAGES_TO_ANALYZE = 10;      // higher bar for mixed all-conversation fallback
 
 const MAX_RETRIES = 3;
-const INITIAL_DELAY_MS = 1000;
-const MAX_DELAY_MS = 15000;
+const RETRY_DELAYS_MS = [8000, 25000, 120000]; // 8s → 25s → 120s
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -179,7 +178,6 @@ Study how they write — their tone, emoji habits, sentence length, vocabulary, 
 
   let profile = null;
   let retries = 0;
-  let delay = INITIAL_DELAY_MS;
 
   try {
     while (retries < MAX_RETRIES) {
@@ -221,9 +219,9 @@ Study how they write — their tone, emoji habits, sentence length, vocabulary, 
           err.message?.includes("No JSON found") || err.message?.includes("JSON");
 
         if ((isRateLimited || isTransient || isParseError) && retries < MAX_RETRIES) {
-          console.warn(`[StyleService] Retry ${retries}/${MAX_RETRIES} after ${delay}ms — ${err.message}`);
-          await sleep(delay);
-          delay = Math.min(delay * 2, MAX_DELAY_MS);
+          const waitMs = RETRY_DELAYS_MS[retries - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+          console.warn(`[StyleService] Retry ${retries}/${MAX_RETRIES} after ${waitMs / 1000}s — ${err.message}`);
+          await sleep(waitMs);
           continue;
         }
 

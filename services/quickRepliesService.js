@@ -36,8 +36,7 @@ const repliesModel = vertexAI.getGenerativeModel({
 const CONTEXT_MESSAGE_LIMIT = 6;
 
 const MAX_RETRIES = 3;
-const INITIAL_DELAY_MS = 1000;
-const MAX_DELAY_MS = 15000;
+const RETRY_DELAYS_MS = [8000, 25000, 120000]; // 8s → 25s → 120s
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -137,7 +136,6 @@ export async function generateQuickReplies(conversationId, creatorId) {
 
     let suggestions = null;
     let retries = 0;
-    let delay = INITIAL_DELAY_MS;
 
     while (retries < MAX_RETRIES) {
       try {
@@ -173,9 +171,9 @@ export async function generateQuickReplies(conversationId, creatorId) {
           err.message?.includes("No JSON found") || err.message?.includes("JSON");
 
         if ((isRateLimited || isTransient || isParseError) && retries < MAX_RETRIES) {
-          console.warn(`[QuickReplies] Retry ${retries}/${MAX_RETRIES} after ${delay}ms — ${err.message}`);
-          await sleep(delay);
-          delay = Math.min(delay * 2, MAX_DELAY_MS);
+          const waitMs = RETRY_DELAYS_MS[retries - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+          console.warn(`[QuickReplies] Retry ${retries}/${MAX_RETRIES} after ${waitMs / 1000}s — ${err.message}`);
+          await sleep(waitMs);
           continue;
         }
 
