@@ -29,6 +29,7 @@ const repliesModel = vertexAI.getGenerativeModel({
   generationConfig: {
     temperature: 0.75,
     maxOutputTokens: 500,
+    responseMimeType: "application/json",
   },
 });
 
@@ -144,8 +145,7 @@ export async function generateQuickReplies(conversationId, creatorId) {
           contents: [{ role: "user", parts: [{ text: prompt }] }],
         });
 
-        const parts = response.response.candidates?.[0]?.content?.parts;
-        const rawText = parts?.find((p) => !p.thought)?.text;
+        const rawText = response.response.candidates?.[0]?.content?.parts?.[0]?.text;
         const jsonMatch = rawText?.match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error("No JSON found in Gemini quick replies response");
 
@@ -169,8 +169,10 @@ export async function generateQuickReplies(conversationId, creatorId) {
           err.message?.includes("429") || err.message?.includes("RESOURCE_EXHAUSTED");
         const isTransient =
           err.message?.includes("500") || err.message?.includes("503");
+        const isParseError =
+          err.message?.includes("No JSON found") || err.message?.includes("JSON");
 
-        if ((isRateLimited || isTransient) && retries < MAX_RETRIES) {
+        if ((isRateLimited || isTransient || isParseError) && retries < MAX_RETRIES) {
           console.warn(`[QuickReplies] Retry ${retries}/${MAX_RETRIES} after ${delay}ms — ${err.message}`);
           await sleep(delay);
           delay = Math.min(delay * 2, MAX_DELAY_MS);

@@ -23,6 +23,7 @@ const styleModel = vertexAI.getGenerativeModel({
   generationConfig: {
     temperature: 0.2,
     maxOutputTokens: 600,
+    responseMimeType: "application/json",
   },
 });
 
@@ -153,8 +154,7 @@ Study how they write — their tone, emoji habits, sentence length, vocabulary, 
           contents: [{ role: "user", parts: [{ text: prompt }] }],
         });
 
-        const parts = response.response.candidates?.[0]?.content?.parts;
-        const rawText = parts?.find((p) => !p.thought)?.text;
+        const rawText = response.response.candidates?.[0]?.content?.parts?.[0]?.text;
         const jsonMatch = rawText?.match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error("No JSON found in Gemini style response");
 
@@ -183,8 +183,10 @@ Study how they write — their tone, emoji habits, sentence length, vocabulary, 
           err.message?.includes("429") || err.message?.includes("RESOURCE_EXHAUSTED");
         const isTransient =
           err.message?.includes("500") || err.message?.includes("503");
+        const isParseError =
+          err.message?.includes("No JSON found") || err.message?.includes("JSON");
 
-        if ((isRateLimited || isTransient) && retries < MAX_RETRIES) {
+        if ((isRateLimited || isTransient || isParseError) && retries < MAX_RETRIES) {
           console.warn(`[StyleService] Retry ${retries}/${MAX_RETRIES} after ${delay}ms — ${err.message}`);
           await sleep(delay);
           delay = Math.min(delay * 2, MAX_DELAY_MS);
