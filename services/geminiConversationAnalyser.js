@@ -454,7 +454,8 @@ ${hasCreatorMessage && lastSenderIsUser ? "- ⚠️ User is waiting for Creator'
         contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
       });
 
-      const text = response.response.candidates?.[0]?.content?.parts?.[0]?.text;
+      const responseParts = response.response.candidates?.[0]?.content?.parts;
+      const text = responseParts?.find((p) => !p.thought)?.text;
 
       if (!text) {
         throw new Error("Empty Gemini response");

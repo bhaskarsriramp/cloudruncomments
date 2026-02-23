@@ -144,7 +144,8 @@ export async function generateQuickReplies(conversationId, creatorId) {
           contents: [{ role: "user", parts: [{ text: prompt }] }],
         });
 
-        const rawText = response.response.candidates?.[0]?.content?.parts?.[0]?.text;
+        const parts = response.response.candidates?.[0]?.content?.parts;
+        const rawText = parts?.find((p) => !p.thought)?.text;
         const jsonMatch = rawText?.match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error("No JSON found in Gemini quick replies response");
 
