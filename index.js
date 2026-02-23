@@ -3139,8 +3139,8 @@ app.post("/api/quick-replies/backfill", async (req, res) => {
       try {
         await generateQuickReplies(conv._id, conv.creatorId);
         processed++;
-        // 400ms gap — gentle on Gemini rate limits
-        await new Promise((r) => setTimeout(r, 400));
+        // 3s gap — each conversation makes 2 Gemini calls; leave room for live webhook traffic
+        await new Promise((r) => setTimeout(r, 3000));
       } catch (err) {
         failed++;
         console.error(`[Backfill] Failed for conversation ${conv._id}: ${err.message}`);

@@ -40,6 +40,36 @@ const RETRY_DELAYS_MS = [8000, 25000, 120000]; // 8s → 25s → 120s
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Robust JSON extraction — mirrors the pattern from geminiConversationAnalyser.
+ * Tries direct parse first, then markdown code block, before giving up.
+ */
+function extractJson(text) {
+  if (!text || typeof text !== "string") return null;
+
+  // Direct match and parse
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch {
+      // Might be truncated — fall through to markdown attempt
+    }
+  }
+
+  // Markdown code block  ``` json { ... } ```
+  const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (codeBlockMatch) {
+    try {
+      return JSON.parse(codeBlockMatch[1].trim());
+    } catch {
+      // Still nothing usable
+    }
+  }
+
+  return null;
+}
+
 // Fallback suggestions when Gemini is unavailable — grouped by conversation intent
 const FALLBACKS = {
   Lead: [
@@ -144,10 +174,15 @@ export async function generateQuickReplies(conversationId, creatorId) {
         });
 
         const rawText = response.response.candidates?.[0]?.content?.parts?.[0]?.text;
-        const jsonMatch = rawText?.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error("No JSON found in Gemini quick replies response");
 
-        const parsed = JSON.parse(jsonMatch[0]);
+        if (!rawText) throw new Error("Empty Gemini response");
+
+        const parsed = extractJson(rawText);
+
+        if (!parsed) {
+          console.error("[QuickReplies] Failed to parse JSON:", rawText.substring(0, 200));
+          throw new Error("No JSON found in Gemini quick replies response");
+        }
 
         if (!Array.isArray(parsed.replies) || parsed.replies.length === 0) {
           throw new Error("Gemini returned empty or malformed replies array");

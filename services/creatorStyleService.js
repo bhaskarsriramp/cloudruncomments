@@ -50,6 +50,56 @@ const FITNESS_CREATOR_DEFAULT = {
 };
 
 /**
+ * Robust JSON extraction — mirrors the pattern from geminiConversationAnalyser.
+ * Falls back to field-by-field regex extraction when JSON is truncated or malformed.
+ */
+function extractStyleJson(text) {
+  if (!text || typeof text !== "string") return null;
+
+  // Direct match and parse
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch {
+      // Might be truncated — try alternatives
+      console.log("[StyleService] JSON parse failed, attempting partial extraction...");
+    }
+  }
+
+  // Markdown code block
+  const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (codeBlockMatch) {
+    try {
+      return JSON.parse(codeBlockMatch[1].trim());
+    } catch {
+      // Fall through to partial extraction
+    }
+  }
+
+  // Partial field extraction — same pattern as geminiConversationAnalyser
+  try {
+    const partial = {};
+    const toneMatch = text.match(/"tone"\s*:\s*"([^"]+)"/);
+    if (toneMatch) partial.tone = toneMatch[1];
+    const emojiMatch = text.match(/"emojiUsage"\s*:\s*"([^"]+)"/);
+    if (emojiMatch) partial.emojiUsage = emojiMatch[1];
+    const lengthMatch = text.match(/"avgLength"\s*:\s*"([^"]+)"/);
+    if (lengthMatch) partial.avgLength = lengthMatch[1];
+    const guidelinesMatch = text.match(/"writingGuidelines"\s*:\s*"([^"]+)"/);
+    if (guidelinesMatch) partial.writingGuidelines = guidelinesMatch[1];
+    if (partial.tone || partial.writingGuidelines) {
+      console.log("[StyleService] ⚠️ Using partial extraction:", JSON.stringify(partial));
+      return partial;
+    }
+  } catch {
+    // Nothing recoverable
+  }
+
+  return null;
+}
+
+/**
  * Returns the creator's style profile — from cache or freshly built.
  * Never throws; falls back to FITNESS_CREATOR_DEFAULT on any error.
  *
@@ -187,10 +237,15 @@ Study how they write — their tone, emoji habits, sentence length, vocabulary, 
         });
 
         const rawText = response.response.candidates?.[0]?.content?.parts?.[0]?.text;
-        const jsonMatch = rawText?.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error("No JSON found in Gemini style response");
 
-        const parsed = JSON.parse(jsonMatch[0]);
+        if (!rawText) throw new Error("Empty Gemini response");
+
+        const parsed = extractStyleJson(rawText);
+
+        if (!parsed) {
+          console.error("[StyleService] Failed to parse JSON:", rawText.substring(0, 200));
+          throw new Error("No JSON found in Gemini style response");
+        }
 
         profile = {
           tone: String(parsed.tone || "conversational"),
