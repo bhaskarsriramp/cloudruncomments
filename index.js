@@ -17,6 +17,7 @@ import { findOrCreateConversationByParticipant } from "./services/conversationDi
 import { detectLeadRealtime } from "./services/leadDetectionService.js";
 import { generateQuickReplies } from "./services/quickRepliesService.js";
 import { canSendDM, waitForDMSlot } from "./services/rateLimiter.js";
+import { encryptToken, decryptUserTokens } from "./utils/tokenCrypto.js";
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
@@ -225,11 +226,11 @@ async function refreshFbTokensForUser(user) {
     }
   }
 
-  // 3️⃣ Save updates to DB
+  // 3️⃣ Save updates to DB (encrypt tokens before persisting)
   await User.findByIdAndUpdate(user._id, {
-    fbLongLivedToken: newUserLL,
+    fbLongLivedToken: encryptToken(newUserLL),
     fbLongLivedTokenExpiry: newUserExpiry,
-    fbPageAccessToken: newPageToken,
+    fbPageAccessToken: encryptToken(newPageToken),
     fbLastRefreshAt: new Date(),
     fbNeedsReconnect: false,
     updated_at: new Date(),
@@ -245,6 +246,7 @@ async function ensureFreshPageTokenForUser(userId) {
   const user = await User.findById(userId)
     .select("_id instagramConnected fbLongLivedToken fbLongLivedTokenExpiry fbPageId fbPageAccessToken")
     .lean();
+  decryptUserTokens(user);
 
   if (!user || !user.instagramConnected) return { fbPageAccessToken: null, fbPageId: null };
   if (!user.fbLongLivedToken) return { fbPageAccessToken: null, fbPageId: user.fbPageId || null };
