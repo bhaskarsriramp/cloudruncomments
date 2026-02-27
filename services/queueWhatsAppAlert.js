@@ -8,19 +8,38 @@ const AGENDA_COLLECTION = "agenda_jobs";
 
 export async function queueWhatsAppAlert({ conversationId, creatorId, participantId }) {
   const db = mongoose.connection.db;
-  await db.collection(AGENDA_COLLECTION).insertOne({
-    name: "send-whatsapp-alert",
-    data: {
-      conversationId: conversationId.toString(),
-      creatorId: creatorId.toString(),
-      participantId: participantId.toString(),
-      attempt: 0,
+
+  // Use upsert so that if a pending job already exists for this conversation,
+  // a second rapid message does NOT create a duplicate job.
+  // $setOnInsert only writes when the document is newly created (no match found).
+  const result = await db.collection(AGENDA_COLLECTION).updateOne(
+    {
+      name: "send-whatsapp-alert",
+      "data.conversationId": conversationId.toString(),
+      lockedAt: null, // only match jobs that haven't been picked up yet
     },
-    type: "normal",
-    priority: 0,
-    nextRunAt: new Date(),
-    lockedAt: null,
-    lastModifiedBy: null,
-  });
-  console.log(`[CloudRun] 📋 WhatsApp alert queued for conversation ${conversationId}`);
+    {
+      $setOnInsert: {
+        name: "send-whatsapp-alert",
+        data: {
+          conversationId: conversationId.toString(),
+          creatorId: creatorId.toString(),
+          participantId: participantId.toString(),
+          attempt: 0,
+        },
+        type: "normal",
+        priority: 0,
+        nextRunAt: new Date(),
+        lockedAt: null,
+        lastModifiedBy: null,
+      },
+    },
+    { upsert: true }
+  );
+
+  if (result.upsertedCount > 0) {
+    console.log(`[CloudRun] 📋 WhatsApp alert queued for conversation ${conversationId}`);
+  } else {
+    console.log(`[CloudRun] ⏭️ WhatsApp alert already pending for conversation ${conversationId}, skipping duplicate`);
+  }
 }
