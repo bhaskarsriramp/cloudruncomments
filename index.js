@@ -198,17 +198,28 @@ app.post("/pubsub", async (req, res) => {
             queryFilter.messageStatus = { $in: lowerStatuses };
           }
 
-          const result = await WhatsappMessage.findOneAndUpdate(
-            queryFilter,
-            { $set: update },
-            { new: false }
-          );
+       let result = await WhatsappMessage.findOneAndUpdate(
+                          queryFilter,
+                          { $set: update },
+                          { new: false }
+                        );
 
-          if (result) {
-            console.log(`✅ WhatsappMessage updated — id: ${messageId}, status: ${status}`);
-          } else {
-            console.warn(`⚠️ No WhatsappMessage found or status already advanced — id: ${messageId}, status: ${status}`);
-          }
+                    if (!result) {
+                      // Race condition guard: webhook may fire before the sender updates messageId in DB.
+                      // Wait briefly and retry once.
+                      await new Promise(r => setTimeout(r, 500));
+                      result = await WhatsappMessage.findOneAndUpdate(
+                        queryFilter,
+                        { $set: update },
+                        { new: false }
+                      );
+                    }
+
+                        if (result) {
+                          console.log(`✅ WhatsappMessage updated — id: ${messageId}, status: ${status}`);
+                        } else {
+                          console.warn(`⚠️ No WhatsappMessage found or status already advanced — id: ${messageId}, status: ${status}`);
+                        }
         }
       }
     }
