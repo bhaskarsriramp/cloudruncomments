@@ -187,8 +187,19 @@ app.post("/pubsub", async (req, res) => {
             update.errorDelivery = JSON.stringify(s.errors);
           }
 
+          // Only advance status forward: queued → sent → delivered → read
+          // "failed" always overwrites. Out-of-order webhooks (e.g. delivered before sent) are ignored.
+          const STATUS_RANK = { queued: 0, sent: 1, delivered: 2, read: 3 };
+          const queryFilter = { messageId };
+          if (STATUS_RANK[status] !== undefined) {
+            const lowerStatuses = Object.keys(STATUS_RANK).filter(
+              s => STATUS_RANK[s] < STATUS_RANK[status]
+            );
+            queryFilter.messageStatus = { $in: lowerStatuses };
+          }
+
           const result = await WhatsappMessage.findOneAndUpdate(
-            { messageId },
+            queryFilter,
             { $set: update },
             { new: false }
           );
@@ -196,7 +207,7 @@ app.post("/pubsub", async (req, res) => {
           if (result) {
             console.log(`✅ WhatsappMessage updated — id: ${messageId}, status: ${status}`);
           } else {
-            console.warn(`⚠️ No WhatsappMessage found for messageId: ${messageId}`);
+            console.warn(`⚠️ No WhatsappMessage found or status already advanced — id: ${messageId}, status: ${status}`);
           }
         }
       }
@@ -209,6 +220,9 @@ app.post("/pubsub", async (req, res) => {
   }
 });
 
+app.post("/pubsub-messaging", async (req, res) => {
+
+});
 
 
 // Health check

@@ -62,4 +62,44 @@ async function sendWhatsAppAlert(creatorPhone, leadName, leadMessage, urlToken) 
   }
 }
 
-export { sendWhatsAppAlert };
+// Subscribe your app to receive webhook events for a WhatsApp Business Account (WABA).
+// Call this once per WABA (e.g. during onboarding or first-time setup).
+// Requires: WABA_ID and WHATSAPP_SYSTEM_TOKEN env vars.
+// Equivalent to subscribePageToInstagramWebhooks() but for WhatsApp.
+async function subscribeWABAToWebhooks() {
+  const wabaId      = process.env.WABA_ID;
+  const systemToken = process.env.WHATSAPP_SYSTEM_TOKEN;
+
+  if (!wabaId)      throw new Error("WABA_ID env var is required");
+  if (!systemToken) throw new Error("WHATSAPP_SYSTEM_TOKEN env var is required");
+
+  try {
+    const response = await axios.post(
+      `https://graph.facebook.com/v24.0/${encodeURIComponent(wabaId)}/subscribed_apps`,
+      null,
+      {
+        headers: { Authorization: `Bearer ${systemToken}` },
+        timeout: 15000,
+      }
+    );
+
+    const success = response?.data?.success;
+    console.log("subscribeWABAToWebhooks raw response:", response?.data);
+
+    if (success) {
+      console.log(`✅ WABA ${wabaId} subscribed to webhooks`);
+    } else {
+      console.warn("⚠️ WABA subscription response unclear:", response?.data);
+    }
+
+    return { success, raw: response?.data };
+  } catch (error) {
+    console.error(
+      "❌ subscribeWABAToWebhooks failed:",
+      JSON.stringify(error.response?.data || error.message, null, 2)
+    );
+    return { success: false, error: error.message };
+  }
+}
+
+export { sendWhatsAppAlert, subscribeWABAToWebhooks };
