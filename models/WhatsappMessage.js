@@ -6,7 +6,7 @@ const WhatsappMessageSchema = new Schema({
   code:  { type: String, default: null },            // 6-digit OTP (null for service alerts)
   userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
   used:  { type: Boolean, default: false },          // prevent replay
-  createdAt: { type: Date, default: Date.now, expires: 600 }, // auto-delete after 10 min
+  createdAt: { type: Date, default: Date.now },
 
   // WhatsApp delivery tracking
   messageId:     { type: String, default: null },   // WA message id returned on send
