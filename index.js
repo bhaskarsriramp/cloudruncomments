@@ -34,7 +34,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const db_username = process.env.MONGO_DB_USER;
 const db_password = process.env.MONGO_DB_PASS;
 
-var MONGO_URI = 'mongodb+srv://'+db_username+':'+db_password+'@cluster0.itfkrwb.mongodb.net/?appName=Cluster0';
+var MONGO_URI = 'mongodb+srv://'+db_username+':'+db_password+'@cluster0.ds8pal0.mongodb.net/?appName=Cluster0';
 
 // ---------- Axios setup ----------
 const http = axios.create({
