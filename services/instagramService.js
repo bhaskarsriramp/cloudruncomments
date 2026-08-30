@@ -89,6 +89,28 @@ async fetchOlderMessages({
   }
 
 
+ async replyToComment({ commentId, accessToken, message }) {
+    try {
+      const res = await axios.post(
+        `${GRAPH_API_BASE}/${commentId}/replies`,
+        null,
+        {
+          params: {
+            message,
+            access_token: accessToken,
+          },
+        }
+      );
+      return res.data;
+    } catch (error) {
+      console.error(
+        "Instagram reply-to-comment error:",
+        error.response?.data || error
+      );
+      throw error;
+    }
+  }
+
  async sendMessage({ pageId, accessToken, payload }) {
     try {
       const res = await axios.post(
