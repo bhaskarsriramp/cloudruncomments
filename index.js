@@ -365,9 +365,18 @@ app.post("/pubsub-messaging", async (req, res) => {
       return res.status(200).send("ignored: bad payload");
     }
 
-    // Standard Meta webhook envelope forwarded as-is by the
-    // automatic-comment-replies function: { object, entry: [{ id, changes }] }
-    const entries = payload?.entry || [];
+    // automatic-comment-replies wraps the raw Meta webhook body rather than
+    // forwarding it as-is: { receivedAt, eventType, headers, body: { object, entry } }.
+    // Comments and DMs go to separate Pub/Sub topics (ig-webhook-events /
+    // ig-messaging-events) based on payload.eventType, but both land here if
+    // both topics' push subscriptions point at this endpoint — eventType lets
+    // us ignore anything that isn't a comment event without guessing from shape.
+    if (payload?.eventType && payload.eventType !== "comment") {
+      console.log(`ℹ️ Ignoring non-comment eventType: ${payload.eventType}`);
+      return res.status(200).send("ignored: not a comment event");
+    }
+
+    const entries = payload?.body?.entry || [];
     for (const entry of entries) {
       const entryIgUserId = entry.id;
       const changes = entry.changes || [];
