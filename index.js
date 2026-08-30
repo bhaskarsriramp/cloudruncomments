@@ -194,8 +194,14 @@ async function handleCommentChange({ igUserId, value }) {
     platform: "instagram",
     status: "active",
   });
-  if (!automation) return; // nothing configured for this post
-  if (automation.postLive === false) return;
+  if (!automation) {
+    console.log(`ℹ️ No active automation for user ${user._id} on postId ${mediaId}`);
+    return;
+  }
+  if (automation.postLive === false) {
+    console.log(`ℹ️ Automation ${automation._id} matched but postLive=false, skipping`);
+    return;
+  }
 
   // Keyword match — case-insensitive substring. No keywords configured means
   // any comment on this post triggers it.
@@ -204,7 +210,10 @@ async function handleCommentChange({ igUserId, value }) {
     .filter(Boolean);
   const textLower = commentText.toLowerCase();
   const matched = keywords.length === 0 || keywords.some((k) => textLower.includes(k));
-  if (!matched) return;
+  if (!matched) {
+    console.log(`ℹ️ Comment "${commentText}" didn't match automation ${automation._id}'s keywords [${keywords.join(", ")}]`);
+    return;
+  }
 
   const pageAccessToken = user.fbPageAccessToken;
   const fbPageId = user.fbPageId;
