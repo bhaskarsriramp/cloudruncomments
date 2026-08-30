@@ -1,7 +1,7 @@
 // services/realtimePublisher.js
 import axios from "axios";
 
-const REALTIME_URL = "http://34.180.49.15:3000";
+const REALTIME_URL = "http://35.254.191.194:3000";
 
 // Axios instance with optimized settings
 const realtimeClient = axios.create({

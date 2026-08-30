@@ -2,7 +2,7 @@
 // Rate limiting via the Redis bridge VM (http calls) — no direct ioredis needed.
 import axios from "axios";
 
-const BRIDGE_URL = "http://34.180.49.15:3000";
+const BRIDGE_URL = "http://35.254.191.194:3000";
 const WAIT_INTERVALS_MS = [15000, 35000, 60000, 90000, 120000];
 
 const bridgeClient = axios.create({
