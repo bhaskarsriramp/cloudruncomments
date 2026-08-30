@@ -1,4 +1,4 @@
-// models/ActionLock.js
+// models/ProcessedEvent.js
 import mongoose from "mongoose";
 const { Schema } = mongoose;
 
@@ -15,8 +15,7 @@ const ProcessedEventSchema = new Schema(
 ProcessedEventSchema.index({ eventId: 1 });
 
 const ProcessedEvent =
-  mongoose.models.ActionLock ||
+  mongoose.models.ProcessedEvent ||
   mongoose.model("ProcessedEvent", ProcessedEventSchema, "processed_event");
-  //console
 
 export default ProcessedEvent;
