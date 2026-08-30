@@ -330,6 +330,114 @@ async function handleCommentChange({ igUserId, value }) {
   );
 }
 
+
+// ---------- DM / MESSAGING (conversation persistence) ----------
+// Scope: persist incoming/outgoing Instagram DMs into Message/Conversation
+// and push a realtime inbox update. Lead detection (detectLeadRealtime) and
+// WhatsApp alerting are intentionally NOT called here — that pipeline is
+// disabled platform-wide for now. Re-wire it once it's re-enabled.
+async function handleMessagingEvent({ businessIgUserId, messagingEvent }) {
+  const senderId = messagingEvent?.sender?.id;
+  const message = messagingEvent?.message;
+
+  if (!senderId || !message) {
+    console.warn("⚠️ Messaging webhook missing sender/message, skipping:", messagingEvent);
+    return;
+  }
+
+  // Ignore echoes of our own outbound messages — those are already saved
+  // directly by whatever route sent them via the Graph API.
+  if (message.is_echo) {
+    console.log("ℹ️ Ignoring echo of our own outbound message:", message.mid);
+    return;
+  }
+
+  const user = await User.findOne({ igUserId: businessIgUserId }).lean();
+  if (!user) {
+    console.warn(`⚠️ No user found for igUserId ${businessIgUserId}`);
+    return;
+  }
+  decryptUserTokens(user);
+
+  let type = "text";
+  let text = message.text || null;
+  let mediaUrl = null;
+  let mediaType = null;
+
+  if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+    const attachment = message.attachments[0];
+    if (attachment.type === "image") {
+      type = "image";
+      mediaType = "image";
+      mediaUrl = attachment.payload?.url || null;
+    } else if (attachment.type === "video") {
+      type = "video";
+      mediaType = "video";
+      mediaUrl = attachment.payload?.url || null;
+    } else {
+      type = "system";
+      text = text || "Shared unsupported content";
+    }
+  }
+
+  if (!text && !mediaUrl) {
+    console.log("ℹ️ Messaging event has no text/media, skipping:", message.mid);
+    return;
+  }
+
+  const createdAt = messagingEvent.timestamp ? new Date(messagingEvent.timestamp) : new Date();
+
+  const persistArgs = {
+    creatorId: user._id,
+    businessIgUserId,
+    senderIgUserId: senderId,
+    igMessageId: message.mid,
+    type,
+    text,
+    mediaUrl,
+    mediaType,
+    action: null,
+    createdAt,
+  };
+
+  // Try the cheap path first (conversation already known to us).
+  let result = await persistInboxMessage({ ...persistArgs, skipIfNoConversation: true });
+
+  if (result === null) {
+    // Brand new conversation — pull history from Meta before recording this message.
+    const pageAccessToken = user.fbPageAccessToken;
+    const fbPageId = user.fbPageId;
+    if (!pageAccessToken || !fbPageId) {
+      console.warn(`⚠️ User ${user._id} has no Facebook Page token/id — cannot discover conversation`);
+      return;
+    }
+
+    try {
+      await findOrCreateConversationByParticipant({
+        creatorId: user._id,
+        participantIgUserId: senderId,
+        businessIgUserId,
+        pageAccessToken,
+        fbPageId,
+      });
+    } catch (err) {
+      console.error("❌ findOrCreateConversationByParticipant failed:", err.message);
+      return;
+    }
+
+    result = await persistInboxMessage({ ...persistArgs, skipIfNoConversation: false });
+  }
+
+  if (result?.conversation && result?.message) {
+    publishInboxMessageHTTP({
+      creatorId: user._id.toString(),
+      conversationId: result.conversation._id.toString(),
+      message: result.message,
+      conversation: result.conversation,
+    });
+  }
+}
+
 app.post("/pubsub-messaging", async (req, res) => {
   // Lightweight shared-secret check — configure the push subscription's
   // endpoint as `<service-url>/pubsub-messaging?token=<PUBSUB_TOKEN>`.
@@ -380,9 +488,23 @@ app.post("/pubsub-messaging", async (req, res) => {
     // ig-messaging-events) based on payload.eventType, but both land here if
     // both topics' push subscriptions point at this endpoint — eventType lets
     // us ignore anything that isn't a comment event without guessing from shape.
+    if (payload?.eventType === "messaging") {
+      const entries = payload?.body?.entry || [];
+      for (const entry of entries) {
+        const businessIgUserId = entry.id;
+        const messagingEvents = entry.messaging || [];
+        for (const messagingEvent of messagingEvents) {
+          await handleMessagingEvent({ businessIgUserId, messagingEvent }).catch(
+            (err) => console.error("❌ handleMessagingEvent error:", err.message)
+          );
+        }
+      }
+      return res.status(200).send("ok");
+    }
+
     if (payload?.eventType && payload.eventType !== "comment") {
-      console.log(`ℹ️ Ignoring non-comment eventType: ${payload.eventType}`);
-      return res.status(200).send("ignored: not a comment event");
+      console.log(`ℹ️ Ignoring unrecognized eventType: ${payload.eventType}`);
+      return res.status(200).send("ignored: not a comment or messaging event");
     }
 
     const entries = payload?.body?.entry || [];
