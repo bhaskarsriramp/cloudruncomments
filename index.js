@@ -18,7 +18,6 @@ import { detectLeadRealtime } from "./services/leadDetectionService.js";
 import { generateQuickReplies } from "./services/quickRepliesService.js";
 import { canSendDM, waitForDMSlot } from "./services/rateLimiter.js";
 import { encryptToken, decryptUserTokens } from "./utils/tokenCrypto.js";
-import WhatsappMessage from "./models/WhatsappMessage.js";
 
 const app = express();
 app.use(express.json({ type: "*/*" }));
@@ -134,102 +133,6 @@ async function finalizeAction({ automationId, postId, igUserId, commentText, com
   }
 }
 
-
-app.post("/pubsub", async (req, res) => {
-  try {
-    console.log("📨 /pubsub-whatsapp-status called");
-
-    if (PUBSUB_TOKEN) {
-      const headerToken = req.get("X-Pubsub-Token");
-      if (headerToken !== PUBSUB_TOKEN) {
-        console.warn("⚠️ Unauthorized");
-        return res.status(401).send("unauthorized");
-      }
-    }
-
-    const msg = req.body?.message;
-    if (!msg?.data) {
-      console.log("ℹ️ Empty message");
-      return res.status(204).send();
-    }
-
-    let envelope;
-    try {
-      const json = Buffer.from(msg.data, "base64").toString("utf8");
-      envelope = JSON.parse(json);
-    } catch (e) {
-      console.error("❌ Decode failed", e);
-      return res.status(204).send();
-    }
-
-    if (envelope?.eventType !== "status") {
-      console.log("ℹ️ Not a status event — skipping");
-      return res.status(204).send();
-    }
-
-    await connectMongo();
-
-    const entries = envelope?.body?.entry || [];
-    for (const entry of entries) {
-      const changes = entry?.changes || [];
-      for (const change of changes) {
-        if (change.field !== "messages") continue;
-        const statuses = change?.value?.statuses || [];
-        for (const s of statuses) {
-          const messageId = s.id;
-          const status    = s.status; // "sent" | "delivered" | "read" | "failed"
-
-          if (!messageId || !status) continue;
-
-          const update = { messageStatus: status };
-
-          if (status === "failed" && s.errors?.length) {
-            update.errorDelivery = JSON.stringify(s.errors);
-          }
-
-          // Only advance status forward: queued → sent → delivered → read
-          // "failed" always overwrites. Out-of-order webhooks (e.g. delivered before sent) are ignored.
-          const STATUS_RANK = { queued: 0, sent: 1, delivered: 2, read: 3 };
-          const queryFilter = { messageId };
-          if (STATUS_RANK[status] !== undefined) {
-            const lowerStatuses = Object.keys(STATUS_RANK).filter(
-              s => STATUS_RANK[s] < STATUS_RANK[status]
-            );
-            queryFilter.messageStatus = { $in: lowerStatuses };
-          }
-
-       let result = await WhatsappMessage.findOneAndUpdate(
-                          queryFilter,
-                          { $set: update },
-                          { new: false }
-                        );
-
-                    if (!result) {
-                      // Race condition guard: webhook may fire before the sender updates messageId in DB.
-                      // Wait briefly and retry once.
-                      await new Promise(r => setTimeout(r, 500));
-                      result = await WhatsappMessage.findOneAndUpdate(
-                        queryFilter,
-                        { $set: update },
-                        { new: false }
-                      );
-                    }
-
-                        if (result) {
-                          console.log(`✅ WhatsappMessage updated — id: ${messageId}, status: ${status}`);
-                        } else {
-                          console.warn(`⚠️ No WhatsappMessage found or status already advanced — id: ${messageId}, status: ${status}`);
-                        }
-        }
-      }
-    }
-
-    return res.status(204).send();
-  } catch (err) {
-    console.error("❌ /pubsub-whatsapp-status error", err.message, err.stack);
-    return res.status(500).send("error");
-  }
-});
 
 app.post("/pubsub-messaging", async (req, res) => {
 

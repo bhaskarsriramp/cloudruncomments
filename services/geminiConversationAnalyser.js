@@ -230,10 +230,10 @@ When generating the "reason" field, adopt the persona of a high-tech tactical as
 - "User is actively asking for 1:1 coaching details. Awaiting your response! 🚀"
 - "User sent multiple messages. Immediate response required."
 
-## PART 5: USER CONTEXT (for WhatsApp alerts)
+## PART 5: USER CONTEXT
 
 When leadScore >= 0.6, provide a short (max 100 chars) human-readable summary of what the user wants.
-This will be sent as a WhatsApp alert to the creator, so make it concise and actionable.
+This is shown to the creator, so make it concise and actionable.
 
 Examples:
 - "Wants 1:1 coaching for fat loss, shared their number"

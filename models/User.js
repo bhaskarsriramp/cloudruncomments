@@ -20,7 +20,6 @@ const User_Schema = new Schema({
       enum: ["processed", "processing", "idle"],
       default: "idle"
     },
-  creator_whatsapp_num: { type: String, default: null },
   handle_created: { type: Boolean, default: false },
   leads_plan_limit: { type: Number, default : 5 },
   leads_found: { type: Number, default : 0 },
@@ -46,6 +45,8 @@ const User_Schema = new Schema({
   fbLongLivedToken: { type: String },
   fbLongLivedTokenExpiry: { type: Date },
   fbLastRefreshAt: { type: Date },
+  igLongLivedToken: { type: String },
+  igLongLivedTokenExpiry: { type: Date },
   igBiography: {type : String},
   fbPageAccessToken: {type : String},
   has_profile_pic_ig: { type: Boolean, default: false },

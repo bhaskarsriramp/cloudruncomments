@@ -3,7 +3,6 @@ import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
 import { analyzeConversationIntent } from "./geminiConversationAnalyser.js";
 import { publishConversationUpdate } from "./realtimePublisher.js";
-import { queueWhatsAppAlert } from "./queueWhatsAppAlert.js";
 import { generateQuickReplies } from "./quickRepliesService.js";
 
 
@@ -232,26 +231,6 @@ export async function detectLeadRealtime({
       conversation.followUpAnalyzedAt = now;
 
       await conversation.save();
-
-      // ─────────────────────────────────────────────────────
-      // STEP 4.5: WhatsApp Lead Alert (fire-and-forget)
-      // Send alert if serious lead detected & not already alerted
-      // ─────────────────────────────────────────────────────
-      if (
-        geminiResult.intent === "Lead" &&
-        conversation.conversationLeadSeriousness > 0.65 &&
-        !conversation.whatsappAlertMessageId
-      ) {
-        try {
-          await queueWhatsAppAlert({
-            conversationId: conversationId.toString(),
-            creatorId: creatorId.toString(),
-            participantId: conversation.participantId.toString(),
-          });
-        } catch (alertErr) {
-          console.error(`[LeadDetect] ⚠️ WhatsApp alert queue failed (non-blocking):`, alertErr.message);
-        }
-      }
 
       // ─────────────────────────────────────────────────────
       // STEP 4.7: Quick Replies Generation (fire-and-forget)
